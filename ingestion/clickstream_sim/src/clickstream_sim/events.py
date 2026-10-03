@@ -1,8 +1,11 @@
 import hashlib
 import random
 import uuid
+from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta
+from typing import TypedDict
 
 EVENT_TYPES = ("page_view", "search", "product_view", "add_to_cart", "checkout_started")
 DEVICES = ("mobile", "desktop", "tablet")
@@ -38,11 +41,31 @@ class Event:
 class Catalogue:
     by_category: dict[str, tuple[str, ...]]
     category_of: dict[str, str]
+    all_products: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.all_products:
+            known = set(self.category_of).union(*self.by_category.values())
+            object.__setattr__(self, "all_products", tuple(sorted(known)))
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[tuple[str, str | None]]) -> "Catalogue":
+        grouped: dict[str, list[str]] = defaultdict(list)
+        products: set[str] = set()
+        for product_id, category in rows:
+            products.add(product_id)
+            if category:
+                grouped[category].append(product_id)
+        by_category = {c: tuple(sorted(ps)) for c, ps in sorted(grouped.items())}
+        category_of = {p: c for c, ps in by_category.items() for p in ps}
+        return cls(by_category, category_of, tuple(sorted(products)))
 
     def random_product(self, rng: random.Random, category: str | None) -> str:
-        if category is not None and category in self.by_category:
-            return rng.choice(self.by_category[category])
-        return rng.choice(sorted(self.category_of))
+        candidates = self.by_category.get(category, ()) if category is not None else ()
+        pool = candidates or self.all_products
+        if not pool:
+            raise ValueError("empty catalogue")
+        return rng.choice(pool)
 
 
 @dataclass(frozen=True)
@@ -59,6 +82,13 @@ def _event_id(rng: random.Random) -> str:
 
 def _search_query(category: str | None) -> str:
     return category.replace("_", " ") if category else "offers"
+
+
+class _Extra(TypedDict, total=False):
+    product_id: str | None
+    search_query: str | None
+    quantity: int | None
+    order_id: str | None
 
 
 class _Builder:
@@ -101,7 +131,7 @@ def converting_session(order: OrderRef, catalogue: Catalogue, rng: random.Random
     purchased = rng.choice(order.product_ids)
     category = catalogue.category_of.get(purchased)
 
-    steps: list[tuple[str, dict[str, object]]] = [("page_view", {})]
+    steps: list[tuple[str, _Extra]] = [("page_view", {})]
     if rng.random() < 0.5:
         steps.append(("search", {"search_query": _search_query(category)}))
     viewed = [catalogue.random_product(rng, category) for _ in range(rng.randint(1, 4))]
@@ -109,10 +139,10 @@ def converting_session(order: OrderRef, catalogue: Catalogue, rng: random.Random
     steps.extend(("add_to_cart", {"product_id": p, "quantity": 1}) for p in order.product_ids)
     steps.append(("checkout_started", {"order_id": order.order_id}))
 
-    start = order.purchase_ts - timedelta(seconds=SESSION_WINDOW_SECONDS)
+    start = order.purchase_ts.replace(microsecond=0) - timedelta(seconds=SESSION_WINDOW_SECONDS)
     offsets = sorted(rng.sample(range(SESSION_WINDOW_SECONDS + 1), len(steps)))
     return [
-        builder.make(event_type, start + timedelta(seconds=offset), **extra)  # type: ignore[arg-type]
+        builder.make(event_type, start + timedelta(seconds=offset), **extra)
         for (event_type, extra), offset in zip(steps, offsets, strict=True)
     ]
 
@@ -123,7 +153,7 @@ def browsing_session(at: datetime, catalogue: Catalogue, rng: random.Random) -> 
     first = catalogue.random_product(rng, None)
     category = catalogue.category_of.get(first)
 
-    steps: list[tuple[str, dict[str, object]]] = [("page_view", {})]
+    steps: list[tuple[str, _Extra]] = [("page_view", {})]
     if rng.random() < 0.5:
         steps.append(("search", {"search_query": _search_query(category)}))
     viewed = [first, *(catalogue.random_product(rng, category) for _ in range(rng.randint(0, 3)))]
@@ -132,8 +162,8 @@ def browsing_session(at: datetime, catalogue: Catalogue, rng: random.Random) -> 
         steps.append(("add_to_cart", {"product_id": viewed[-1], "quantity": 1}))
 
     events: list[Event] = []
-    moment = at
+    moment = at.replace(microsecond=0)
     for event_type, extra in steps:
-        events.append(builder.make(event_type, moment, **extra))  # type: ignore[arg-type]
+        events.append(builder.make(event_type, moment, **extra))
         moment += timedelta(seconds=rng.randint(5, 90))
     return events

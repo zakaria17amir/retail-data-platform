@@ -112,3 +112,44 @@ def test_to_dict_v1_has_no_utm_and_matches_schema_fields(
     assert "utm_campaign" not in event.to_dict(1)
     assert list(event.to_dict(2)) == v2_fields
     assert event.to_dict(2)["utm_campaign"] is None
+
+
+def test_none_category_purchased_product_still_valid_session(rng: random.Random) -> None:
+    catalogue = Catalogue.from_rows([("p1", None), ("p2", "toys"), ("p3", "toys")])
+    order = OrderRef("o9", "c9", datetime(2017, 6, 1, 12), ("p1",))
+    events = converting_session(order, catalogue, rng)
+    views = [e.product_id for e in events if e.event_type == "product_view"]
+    assert views[-1] == "p1"
+    assert events[-1].event_type == "checkout_started"
+
+
+def test_unknown_category_falls_back_to_all_products(rng: random.Random) -> None:
+    catalogue = Catalogue.from_rows([("p1", "toys"), ("p2", "books")])
+    assert catalogue.random_product(rng, "garden") in {"p1", "p2"}
+    assert catalogue.random_product(rng, None) in {"p1", "p2"}
+
+
+def test_empty_catalogue_raises(rng: random.Random) -> None:
+    with pytest.raises(ValueError, match="empty catalogue"):
+        Catalogue.from_rows([]).random_product(rng, None)
+    with pytest.raises(ValueError, match="empty catalogue"):
+        Catalogue({}, {}).random_product(rng, "toys")
+
+
+def test_from_rows_keeps_none_category_products_out_of_categories() -> None:
+    catalogue = Catalogue.from_rows([("p2", "toys"), ("p1", None), ("p3", "toys")])
+    assert catalogue.by_category == {"toys": ("p2", "p3")}
+    assert catalogue.category_of == {"p2": "toys", "p3": "toys"}
+    assert catalogue.all_products == ("p1", "p2", "p3")
+
+
+def test_microsecond_timestamps_stay_inside_window(
+    catalogue: Catalogue, rng: random.Random
+) -> None:
+    purchase = datetime(2017, 6, 1, 12, 0, 0, 999_999)
+    order = OrderRef("o1", "c1", purchase, ("p2",))
+    stamps = [_ts(e) for e in converting_session(order, catalogue, rng)]
+    assert stamps[-1] <= purchase.replace(microsecond=0)
+    assert stamps[0] >= purchase.replace(microsecond=0) - timedelta(minutes=30)
+    browsing = browsing_session(purchase, catalogue, random.Random(1))
+    assert _ts(browsing[0]) == purchase.replace(microsecond=0)

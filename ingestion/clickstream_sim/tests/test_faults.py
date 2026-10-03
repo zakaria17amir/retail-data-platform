@@ -36,10 +36,8 @@ def test_inject_rates_with_fixed_seed() -> None:
         assert 70 <= observed <= 130
     assert len(originals) == 1000
     assert all(e.delay_s <= 48 * 3600 for e in late)
-    by_id = {e.event.event_id: e for e in originals if e.event.event_id}
     for dup in dups:
         assert any(dup.event is o.event and dup.delay_s == o.delay_s + 1 for o in originals)
-    assert by_id
     assert all(e.schema_version == 1 for e in emissions)
 
 
