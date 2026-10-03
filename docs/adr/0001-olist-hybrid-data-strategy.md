@@ -1,7 +1,6 @@
 # ADR-0001: Olist real core with replayer and derived clickstream
 
 ## Status
-
 Accepted
 
 ## Context
