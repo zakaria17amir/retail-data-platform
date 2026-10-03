@@ -34,6 +34,7 @@ COPY entrypoint.sh /opt/lakehouse-entrypoint.sh
 RUN chmod +x /opt/lakehouse-entrypoint.sh && mkdir -p "$SPARK_HOME/conf" && chown -R spark:spark "$SPARK_HOME/conf"
 
 RUN ln -s /usr/bin/python3 /usr/local/bin/python
+ENV PYTHONPATH=/opt/lakehouse/src
 USER spark
 WORKDIR /opt/lakehouse
 ENTRYPOINT ["/opt/lakehouse-entrypoint.sh"]

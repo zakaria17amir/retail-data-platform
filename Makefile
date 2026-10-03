@@ -39,16 +39,16 @@ sync:
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy ingestion
+	uv run mypy ingestion lakehouse
 
 test:
-	uv run pytest -m "not integration"
+	uv run pytest -m "not integration and not spark and not ingest"
 
 test-integration:
 	uv run pytest -m integration
 
 test-spark:
-	docker compose --profile ingest run --rm --no-deps spark pytest -p no:cacheprovider /opt/lakehouse/tests -m spark
+	docker compose --profile ingest run --rm --no-deps spark pytest -p no:cacheprovider -W ignore::pytest.PytestUnknownMarkWarning /opt/lakehouse/tests -m spark
 
 download:
 	uv run --package replayer replayer download --dest $(OLIST_DATA_DIR)
