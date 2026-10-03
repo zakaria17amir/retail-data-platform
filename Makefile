@@ -10,6 +10,8 @@ PROFILE ?= core
 up:
 	docker compose --profile $(PROFILE) up -d
 	docker compose --profile $(PROFILE) up -d --wait $$(docker compose --profile $(PROFILE) config --services | grep -v -e '-init$$')
+	@docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q '^minio-init exited 0$$' \
+		|| { echo "minio-init failed"; docker compose --profile $(PROFILE) logs minio-init; exit 1; }
 
 down:
 	docker compose --profile '*' down
@@ -38,16 +40,16 @@ test-integration:
 	uv run pytest -m integration
 
 download:
-	uv run replayer download --dest $(OLIST_DATA_DIR)
+	uv run --package replayer replayer download --dest $(OLIST_DATA_DIR)
 
 seed:
-	uv run replayer seed --data-dir $(OLIST_DATA_DIR)
+	uv run --package replayer replayer seed --data-dir $(OLIST_DATA_DIR)
 
 seed-sample:
-	uv run replayer seed --data-dir tests/fixtures/olist_sample
+	uv run --package replayer replayer seed --data-dir tests/fixtures/olist_sample
 
 sample:
-	uv run replayer sample --src $(OLIST_DATA_DIR) --dest tests/fixtures/olist_sample --n-orders 200
+	uv run --package replayer replayer sample --src $(OLIST_DATA_DIR) --dest tests/fixtures/olist_sample --n-orders 200
 
 status:
-	uv run replayer status
+	uv run --package replayer replayer status

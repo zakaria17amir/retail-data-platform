@@ -39,10 +39,14 @@ real-time ML with MLOps, and GenAI agents, with an AWS + Snowflake cloud path.
 
 ```sh
 cp .env.example .env
+make sync
 make up
-make download
+make download   # needs Kaggle credentials in .env
 make seed
 make status
+
+# no Kaggle account: load the committed sample instead of download + seed
+make seed-sample
 ```
 
 ## Status

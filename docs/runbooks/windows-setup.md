@@ -3,6 +3,14 @@
 The platform is developed on Windows with Docker Desktop (WSL2 backend). Scripts run inside
 containers or Git Bash.
 
+## 0. make and uv
+
+```powershell
+winget install ezwinports.make astral-sh.uv
+```
+
+Run `make` from Git Bash: the Makefile uses `SHELL := /bin/sh`.
+
 ## 1. Docker Desktop
 
 Install Docker Desktop and enable **Use the WSL 2 based engine** (Settings → General).
@@ -13,6 +21,8 @@ Install Docker Desktop and enable **Use the WSL 2 based engine** (Settings → G
 cp scripts/wslconfig.example "$USERPROFILE/.wslconfig"
 wsl --shutdown
 ```
+
+PowerShell equivalent: `Copy-Item scripts\wslconfig.example $env:USERPROFILE\.wslconfig`.
 
 Restart Docker Desktop afterwards. Adjust `memory` and `processors` to your machine.
 
