@@ -3,7 +3,7 @@ name: retail
 services:
   postgres:
     profiles: [core]
-    image: postgres:16.6
+    image: postgres:16.6 # sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
       - -c
@@ -70,6 +70,10 @@ services:
       - -c
       - mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing "local/$$LAKEHOUSE_BUCKET"
     restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
     networks: [retail]
 
 volumes:

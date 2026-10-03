@@ -15,8 +15,7 @@ down:
 	docker compose --profile '*' down
 
 destroy:
-	@printf 'This deletes all Compose volumes. Continue? [y/N] ' && read ans && [ "$$ans" = y ] \
-		&& docker compose --profile '*' down -v || echo 'Aborted.'
+	@printf 'This deletes all Compose volumes. Continue? [y/N] '; read ans; 	if [ "$$ans" = y ]; then docker compose --profile '*' down -v; else echo Aborted.; fi
 
 ps:
 	docker compose --profile '*' ps
