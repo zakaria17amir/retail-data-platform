@@ -108,6 +108,9 @@ def build_timeline(data_dir: Path, start: datetime | None, until: datetime | Non
                     [
                         ("customer_id", order["customer_id"]),
                         ("order_status", "created"),
+                        ("order_approved_at", None),
+                        ("order_delivered_carrier_date", None),
+                        ("order_delivered_customer_date", None),
                         ("order_purchase_timestamp", purchase),
                         (
                             "order_estimated_delivery_date",

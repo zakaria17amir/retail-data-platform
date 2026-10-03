@@ -45,12 +45,21 @@ def _build_parser() -> argparse.ArgumentParser:
     live_parser.add_argument("--data-dir", type=Path, default=default_dir)
     live_parser.add_argument("--from", dest="start", type=datetime.fromisoformat)
     live_parser.add_argument("--until", type=datetime.fromisoformat)
-    live_parser.add_argument(
-        "--speed", type=float, default=float(os.environ.get("REPLAY_SPEED", "3600"))
-    )
+    live_parser.add_argument("--speed", type=float)
     live_parser.add_argument("--loop", action="store_true")
     live_parser.add_argument("--summary-file", type=Path)
     return parser
+
+
+def _resolve_speed(cli_value: float | None) -> float:
+    if cli_value is None:
+        try:
+            cli_value = float(os.environ.get("REPLAY_SPEED", "3600"))
+        except ValueError:
+            raise ValueError("REPLAY_SPEED must be a number") from None
+    if not cli_value > 0:
+        raise ValueError("--speed must be > 0")
+    return cli_value
 
 
 def _run(args: argparse.Namespace) -> dict[str, int]:
@@ -62,12 +71,16 @@ def _run(args: argparse.Namespace) -> dict[str, int]:
     if args.command == "seed":
         return seed(dsn, args.data_dir)
     if args.command == "live":
+        speed = _resolve_speed(args.speed)
+        for moment in (args.start, args.until):
+            if moment is not None and moment.tzinfo is not None:
+                raise ValueError("--from/--until must be naive datetimes (no timezone)")
         counts = run_live(
             dsn,
             args.data_dir,
             start=args.start,
             until=args.until,
-            speed=args.speed,
+            speed=speed,
             loop=args.loop,
         )
         if args.summary_file:

@@ -6,6 +6,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from replayer.live import apply_change, run_live
+from replayer.load import seed
 from replayer.schema import apply_schema
 from replayer.timeline import Change, build_timeline
 
@@ -73,19 +74,42 @@ def test_reference_tables_loaded_once(dsn: str, tmp_data_dir: Path) -> None:
         assert _count(conn, "sellers") == 1
 
 
-def test_run_live_loop_shifts_history_until_signalled(dsn: str, tmp_data_dir: Path) -> None:
-    changes = build_timeline(tmp_data_dir, None, None)
-    calls: list[float] = []
+def test_created_change_clears_seeded_later_columns(
+    dsn: str, conn: psycopg.Connection, tmp_data_dir: Path
+) -> None:
+    seed(dsn, tmp_data_dir)
+    created = next(
+        c
+        for c in build_timeline(tmp_data_dir, None, None)
+        if c.table == "orders"
+        and dict(c.key)["order_id"] == "o1"
+        and dict(c.values)["order_status"] == "created"
+    )
+    apply_change(conn, created)
+    row = conn.execute(
+        "select order_status, order_approved_at, order_delivered_carrier_date, "
+        "order_delivered_customer_date from olist.orders where order_id = 'o1'"
+    ).fetchone()
+    assert row == ("created", None, None, None)
 
-    def sleep_then_terminate(seconds: float) -> None:
-        calls.append(seconds)
-        if len(calls) == 40:
+
+def test_run_live_loop_shifts_history_until_signalled(
+    dsn: str, tmp_data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    changes = build_timeline(tmp_data_dir, None, None)
+    applied: list[Change] = []
+
+    def apply_then_terminate(connection: psycopg.Connection, change: Change) -> None:
+        apply_change(connection, change)
+        applied.append(change)
+        if len(applied) == len(changes) + 5:
             signal.raise_signal(signal.SIGTERM)
 
+    monkeypatch.setattr("replayer.live.apply_change", apply_then_terminate)
     counts = run_live(
-        dsn, tmp_data_dir, start=None, until=None, speed=1e9, loop=True, sleep=sleep_then_terminate
+        dsn, tmp_data_dir, start=None, until=None, speed=1e9, loop=True, sleep=lambda _: None
     )
-    assert len(changes) < sum(counts.values()) < 3 * len(changes)
+    assert sum(counts.values()) == len(changes) + 5
     with psycopg.connect(dsn) as conn:
         row = conn.execute("select count(*) from olist.orders where order_id !~ '^o[0-9]$'")
         assert (row.fetchone() or (0,))[0] > 0

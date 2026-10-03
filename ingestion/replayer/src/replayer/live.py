@@ -76,18 +76,18 @@ def run_live(
     def request_stop(signum: int, frame: FrameType | None) -> None:
         stop.set()
 
-    previous = (
-        {sig: signal.signal(sig, request_stop) for sig in (signal.SIGINT, signal.SIGTERM)}
-        if threading.current_thread() is threading.main_thread()
-        else {}
-    )
     applied: Counter[str] = Counter()
-    try:
-        timeline = build_timeline(data_dir, start, until)
-        with psycopg.connect(dsn, autocommit=True) as conn:
-            apply_schema(conn)
-            ensure_reference_tables(conn, data_dir)
-            if timeline:
+    timeline = build_timeline(data_dir, start, until)
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        apply_schema(conn)
+        ensure_reference_tables(conn, data_dir)
+        if timeline:
+            previous = (
+                {sig: signal.signal(sig, request_stop) for sig in (signal.SIGINT, signal.SIGTERM)}
+                if threading.current_thread() is threading.main_thread()
+                else {}
+            )
+            try:
                 span = timeline[-1].ts - timeline[0].ts + timedelta(days=1)
                 iteration = 0
                 previous_ts = timeline[0].ts
@@ -104,7 +104,7 @@ def run_live(
                     iteration += 1
                     if not loop:
                         break
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+            finally:
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
     return {t.name: applied[t.name] for t in TABLES if applied[t.name]}

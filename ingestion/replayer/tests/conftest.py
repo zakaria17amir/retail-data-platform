@@ -167,6 +167,7 @@ TIMELINE_EXTRA: dict[str, list[list[object]]] = {
     "olist_customers_dataset.csv": [
         ["c3", "u3", 13023, "campinas", "SP"],
         ["c4", "u4", 1310, "sao paulo", "SP"],
+        ["c5", "u5", 1310, "sao paulo", "SP"],
     ],
     "olist_orders_dataset.csv": [
         [
@@ -189,14 +190,26 @@ TIMELINE_EXTRA: dict[str, list[list[object]]] = {
             "",
             "2017-04-15 00:00:00",
         ],
+        [
+            "o5",
+            "c5",
+            "delivered",
+            "2017-05-01 09:00:00",
+            "2017-05-01 12:00:00",
+            "2017-05-01 10:00:00",
+            "2017-05-03 12:00:00",
+            "2017-05-10 00:00:00",
+        ],
     ],
     "olist_order_items_dataset.csv": [
         ["o3", 1, "p1", "s1", "2017-03-03 09:00:00", "12.50", "3.00"],
         ["o4", 1, "p2", "s1", "2017-04-03 08:00:00", "7.00", "2.00"],
+        ["o5", 1, "p1", "s1", "2017-05-02 09:00:00", "5.00", "1.00"],
     ],
     "olist_order_payments_dataset.csv": [
         ["o3", 1, "credit_card", 1, "15.50"],
         ["o4", 1, "boleto", 1, "9.00"],
+        ["o5", 1, "boleto", 1, "6.00"],
     ],
     "olist_order_reviews_dataset.csv": [
         ["r3", "o3", 4, "", "ok", "2017-03-06 00:00:00", "2017-03-07 10:00:00"],
