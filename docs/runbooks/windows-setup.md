@@ -51,8 +51,8 @@ If port 5432 is already taken, change `POSTGRES_PORT` and `POSTGRES_DSN` in `.en
 ## 7. Memory
 
 The `ingest` profile's container limits add up to ~9.3 GiB (spark alone 4 GiB) and the Redpanda
-volume grows to ~2 GB after the full Olist snapshot. Keep `memory=16GB` in `.wslconfig` and ~10 GiB of
-it free for the profile.
+volume grows to ~2 GB after the full Olist snapshot. Keep `memory=16GB` in `.wslconfig` and
+~10 GiB of it free for the profile.
 
 ## 8. Git Bash path conversion
 

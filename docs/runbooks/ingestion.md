@@ -2,8 +2,9 @@
 
 Postgres → Debezium (Kafka Connect) → Redpanda `cdc.olist.*`, clickstream-sim → Redpanda
 `events.*`, Spark Structured Streaming → bronze Delta on MinIO. Serialization, dedupe and
-quarantine rules are in [ADR-0003](../adr/0003-ingestion-serialization.md). Run every command from
-the repo root in Git Bash; prefix raw `docker` commands that take `/paths` with `MSYS_NO_PATHCONV=1`.
+quarantine rules are in [ADR-0003](../adr/0003-ingestion-serialization.md). Run every command
+from the repo root in Git Bash; prefix raw `docker` commands that take `/paths` with
+`MSYS_NO_PATHCONV=1`.
 
 ## Start
 
@@ -40,10 +41,11 @@ long-running containers instead: `docker compose --profile demo up -d replayer c
 
 ## Watch it
 
-- **Redpanda Console**, http://127.0.0.1:${CONSOLE_PORT:-8080}: *Topics* (`cdc.olist.*`,
-  `events.*` message counts; messages decode via the registry), *Schema Registry* (a `<topic>-value`
-  subject per topic; a second version of an `events.*-value` subject after schema evolution), *Connect*
-  (`olist-postgres` RUNNING with one task). An UPDATE reaches its topic in ~0.5 s.
+- **Redpanda Console**, http://127.0.0.1:8080 (port `CONSOLE_PORT`): *Topics* (`cdc.olist.*`,
+  `events.*` message counts; messages decode via the registry), *Schema Registry* (a
+  `<topic>-value` subject per topic; a second version of an `events.*-value` subject after schema
+  evolution), *Connect* (`olist-postgres` RUNNING with one task). An UPDATE reaches its topic in
+  ~0.5 s.
 - **Spark UI**, http://127.0.0.1:4040: *Structured Streaming* shows `cdc_to_bronze` and
   `events_to_bronze` with input/processing rates and batch durations.
 
@@ -68,8 +70,10 @@ uv run --package lakehouse-spark python -c "
 import os
 from deltalake import DeltaTable
 from lakehouse_spark.cli import storage_options
-t = DeltaTable('s3://lakehouse/bronze/_quarantine/events', storage_options=storage_options('s3://lakehouse', os.environ))
-print(t.to_pyarrow_table(columns=['reason', 'kafka_topic', 'kafka_offset', 'raw_value']).slice(0, 20))
+options = storage_options('s3://lakehouse', os.environ)
+t = DeltaTable('s3://lakehouse/bronze/_quarantine/events', storage_options=options)
+cols = ['reason', 'kafka_topic', 'kafka_offset', 'raw_value']
+print(t.to_pyarrow_table(columns=cols).slice(0, 20))
 "
 ```
 
@@ -102,7 +106,7 @@ the 16 GB `.wslconfig`. The Redpanda volume holds ~2 GB after the full snapshot.
 ## `make test-ingest`
 
 **Destructive.** It runs `reset-bronze.sh seed-sample`: Postgres is reseeded with the 200-order
-sample, topics and bronze are wiped. It refuses to run without `ALLOW_RESEED=1`:
+sample, topics and bronze are wiped. Without `ALLOW_RESEED=1` the test is skipped:
 
 ```sh
 ALLOW_RESEED=1 make test-ingest

@@ -81,9 +81,17 @@ jobs:
             clickstream-sim.tags=retail-clickstream-sim
             clickstream-sim.cache-from=type=gha,scope=clickstream-sim
             clickstream-sim.cache-to=type=gha,scope=clickstream-sim,mode=max
+      # connect-init needs publication olist_cdc, created by `replayer seed`
+      - run: make up
+      - run: make seed-sample
       - run: make up PROFILE=ingest
       - run: make test-spark
-      - run: ALLOW_RESEED=1 make test-ingest
+      - env:
+          PYTEST_ADDOPTS: "-rs --strict-markers"
+        run: |
+          set -o pipefail
+          ALLOW_RESEED=1 make test-ingest | tee ingest.txt
+          grep -q ' passed' ingest.txt && ! grep -q ' skipped' ingest.txt
       - if: failure()
         run: docker compose --profile ingest logs --tail 100
       - if: always()

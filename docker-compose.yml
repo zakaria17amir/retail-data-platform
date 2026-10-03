@@ -198,6 +198,7 @@ services:
       LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
       KAFKA_BOOTSTRAP: redpanda:9092
       SCHEMA_REGISTRY_URL: http://redpanda:8081
+      BRONZE_RUN_ID: ${BRONZE_RUN_ID:-}
     ports:
       - "127.0.0.1:4040:4040"
     volumes:
