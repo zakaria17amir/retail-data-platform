@@ -47,3 +47,14 @@ KAGGLE_KEY=<your key>
 ## 6. Port conflicts
 
 If port 5432 is already taken, change `POSTGRES_PORT` and `POSTGRES_DSN` in `.env`.
+
+## 7. Memory
+
+The `ingest` profile's container limits add up to ~9.3 GiB (spark alone 4 GiB) and the Redpanda
+volume grows to ~2 GB after the full Olist snapshot. Keep `memory=16GB` in `.wslconfig` and ~10 GiB of
+it free for the profile.
+
+## 8. Git Bash path conversion
+
+Git Bash rewrites `/paths` in arguments (e.g. `docker compose exec … ls /data`). Prefix such
+commands with `MSYS_NO_PATHCONV=1`.
