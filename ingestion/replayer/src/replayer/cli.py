@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
         target = f"{info.get('host')}:{info.get('port')}/{info.get('dbname')}"
         print(f"error: could not connect to {target}", file=sys.stderr)
         return 1
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -3,8 +3,8 @@ from pathlib import Path
 import psycopg
 import pytest
 from conftest import REVIEW_MESSAGE
-from replayer.load import copy_csv, row_counts, seed
-from replayer.schema import TABLES, apply_schema
+from replayer.load import row_counts, seed
+from replayer.schema import TABLES
 
 EXPECTED = {
     "product_category_name_translation": 1,
@@ -50,16 +50,16 @@ def test_seed_is_idempotent(dsn: str, tmp_csv_dir: Path) -> None:
     assert seed(dsn, tmp_csv_dir) == first
 
 
-def test_copy_strips_leading_bom(dsn: str, conn: psycopg.Connection, tmp_path: Path) -> None:
-    apply_schema(conn)
-    table = next(t for t in TABLES if t.name == "sellers")
-    path = tmp_path / table.csv_file
-    header = ",".join(table.columns).encode()
-    path.write_bytes(b"\xef\xbb\xbf" + header + b"\ns1,13023,campinas,SP\n")
-    conn.execute("truncate olist.sellers")
-    assert copy_csv(conn, table, path) == 1
-    row = conn.execute("select seller_id from olist.sellers").fetchone()
-    assert row == ("s1",)
+def test_copy_rejects_mismatched_header(dsn: str, tmp_csv_dir: Path) -> None:
+    before = seed(dsn, tmp_csv_dir)
+    path = tmp_csv_dir / "olist_customers_dataset.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    cols = lines[0].split(",")
+    cols[0], cols[1] = cols[1], cols[0]
+    path.write_text("\n".join([",".join(cols), *lines[1:]]) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="olist_customers_dataset.csv: header"):
+        seed(dsn, tmp_csv_dir)
+    assert row_counts(dsn) == before
 
 
 def test_updated_at_trigger_fires(dsn: str, conn: psycopg.Connection, tmp_csv_dir: Path) -> None:
