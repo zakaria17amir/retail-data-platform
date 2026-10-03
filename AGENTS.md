@@ -35,6 +35,12 @@ dispatches independent tasks in parallel, reviews, and integrates. Specialist pr
 | `ai-engineer` | `agents/`, `genai/` |
 | `reviewer` | read-only |
 
+Models: implementers run on `sonnet` (pinned in each profile), `reviewer` on `opus`; the final
+whole-branch review also uses `reviewer`. Profiles load only at session start — after editing
+`.devin/agents/`, restart the session. The lead dispatches tasks with disjoint files in parallel and
+overlaps each task's review with the next implementation; it never runs implementers serially through
+one worker.
+
 Rules for every specialist:
 1. Touch only your owned paths. If a task needs a change elsewhere (e.g. a new Compose service or a
    root dependency), stop and report the exact change needed instead of making it.
