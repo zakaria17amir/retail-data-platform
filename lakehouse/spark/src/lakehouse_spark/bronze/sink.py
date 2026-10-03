@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
@@ -22,10 +24,12 @@ def write_bronze(
     good: DataFrame,
     root: str,
     source: str,
+    topics: Sequence[str] | None = None,
     txn_app_id: str | None = None,
     txn_version: int | None = None,
 ) -> None:
-    topics = sorted(r.kafka_topic for r in good.select("kafka_topic").distinct().collect())
+    if topics is None:
+        topics = sorted(r.kafka_topic for r in good.select("kafka_topic").distinct().collect())
     for topic in topics:
         _append(
             good.filter(F.col("kafka_topic") == topic),

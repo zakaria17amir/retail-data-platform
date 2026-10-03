@@ -887,6 +887,7 @@ source = { virtual = "." }
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastavro" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -898,6 +899,7 @@ dev = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastavro" },
     { name = "mypy" },
     { name = "pre-commit" },
     { name = "pytest" },

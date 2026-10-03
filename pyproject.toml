@@ -5,7 +5,7 @@ description = "End-to-end retail data platform"
 requires-python = ">=3.12,<3.13"
 
 [dependency-groups]
-dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit"]
+dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit", "fastavro"]
 
 [tool.uv.workspace]
 members = ["ingestion/replayer", "ingestion/clickstream_sim", "lakehouse/spark"]
