@@ -5,6 +5,8 @@ ENV UV_PYTHON_DOWNLOADS=never UV_COMPILE_BYTECODE=1
 WORKDIR /app
 COPY pyproject.toml uv.lock .python-version ./
 COPY ingestion/replayer ingestion/replayer
+COPY ingestion/clickstream_sim/pyproject.toml ingestion/clickstream_sim/pyproject.toml
+COPY lakehouse/spark/pyproject.toml lakehouse/spark/pyproject.toml
 RUN uv sync --locked --no-dev --package replayer
 
 ENTRYPOINT ["uv", "run", "--no-sync", "--package", "replayer", "replayer"]

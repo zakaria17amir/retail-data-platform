@@ -4,3 +4,7 @@
 !.python-version
 !ingestion/replayer/pyproject.toml
 !ingestion/replayer/src
+!ingestion/clickstream_sim/pyproject.toml
+!ingestion/clickstream_sim/src
+!ingestion/schemas
+!lakehouse/spark/pyproject.toml

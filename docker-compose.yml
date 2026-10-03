@@ -77,7 +77,7 @@ services:
     networks: [retail]
 
   redpanda:
-    profiles: [ingest]
+    profiles: [ingest, demo]
     image: redpandadata/redpanda:v26.2.3@sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9
     command:
       - redpanda
@@ -237,6 +237,36 @@ services:
       resources:
         limits:
           memory: 768m
+    networks: [retail]
+
+  clickstream-sim:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: ingestion/clickstream_sim/Dockerfile
+    command: ["run"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REPLAY_SPEED: ${REPLAY_SPEED:-3600}
+      SIM_LATE_RATE: ${SIM_LATE_RATE:-0.05}
+      SIM_LATE_MAX_HOURS: ${SIM_LATE_MAX_HOURS:-48}
+      SIM_DUP_RATE: ${SIM_DUP_RATE:-0.01}
+      SIM_BAD_RATE: ${SIM_BAD_RATE:-0.0}
+      SIM_SCHEMA_EVOLVE_AFTER: ${SIM_SCHEMA_EVOLVE_AFTER:-0}
+      SIM_BROWSING_RATIO: ${SIM_BROWSING_RATIO:-3}
+      SIM_SEED: ${SIM_SEED:-42}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks: [retail]
 
 configs:
