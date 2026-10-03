@@ -3,7 +3,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from clickstream_sim.cli import SimConfig, run
+import pytest
+from clickstream_sim.cli import SimConfig, report, run
 from clickstream_sim.events import Catalogue, OrderRef
 from clickstream_sim.faults import Emission
 
@@ -11,23 +12,31 @@ CATALOGUE = Catalogue.from_rows([("p1", "toys"), ("p2", "toys"), ("p3", "books")
 
 
 class FakeFeed:
-    def __init__(self, orders: list[OrderRef]) -> None:
+    def __init__(self, orders: list[OrderRef], clock: list[float]) -> None:
         self._orders = list(orders)
+        self._clock = clock
+        self.timeouts: list[float] = []
 
     def poll(self, timeout_s: float) -> OrderRef | None:
-        return self._orders.pop(0) if self._orders else None
+        self.timeouts.append(timeout_s)
+        if self._orders:
+            return self._orders.pop(0)
+        self._clock[0] += timeout_s
+        return None
 
 
 class FakeProducer:
-    def __init__(self, clock: list[float]) -> None:
+    def __init__(self, clock: list[float], errors: int = 0, unflushed: int = 0) -> None:
         self._clock = clock
+        self.errors = errors
+        self._unflushed = unflushed
         self.sent: list[tuple[float, Emission, datetime | None]] = []
 
     def produce(self, emission: Emission, fallback: datetime | None = None) -> None:
         self.sent.append((self._clock[0], emission, fallback))
 
     def flush(self) -> int:
-        return 0
+        return self._unflushed
 
 
 def _orders(n: int) -> list[OrderRef]:
@@ -54,11 +63,17 @@ def _cfg(**overrides: Any) -> SimConfig:
     return SimConfig(**values)
 
 
-def _run(
-    cfg: SimConfig, max_events: int | None, orders: int = 6, summary: Path | None = None
-) -> tuple[dict[str, int], FakeProducer]:
+def _run_full(
+    cfg: SimConfig,
+    max_events: int | None,
+    orders: int = 6,
+    summary: Path | None = None,
+    errors: int = 0,
+    unflushed: int = 0,
+) -> tuple[dict[str, int], FakeProducer, FakeFeed]:
     clock = [0.0]
-    producer = FakeProducer(clock)
+    producer = FakeProducer(clock, errors, unflushed)
+    feed = FakeFeed(_orders(orders), clock)
 
     def sleep(seconds: float) -> None:
         clock[0] += seconds
@@ -69,11 +84,36 @@ def _run(
         summary_file=summary,
         sleep=sleep,
         now=lambda: clock[0],
-        feed=FakeFeed(_orders(orders)),
+        feed=feed,
         producer=producer,
         catalogue=CATALOGUE,
     )
+    return summary_counts, producer, feed
+
+
+def _run(
+    cfg: SimConfig, max_events: int | None, orders: int = 6, summary: Path | None = None
+) -> tuple[dict[str, int], FakeProducer]:
+    summary_counts, producer, _ = _run_full(cfg, max_events, orders, summary)
     return summary_counts, producer
+
+
+def test_delivery_errors_and_unflushed_are_reported(capsys: pytest.CaptureFixture[str]) -> None:
+    summary, _, _ = _run_full(_cfg(), max_events=20, errors=2, unflushed=3)
+    assert (summary["delivery_errors"], summary["unflushed"]) == (2, 3)
+    assert report(summary) == 1
+    assert "2 delivery errors, 3 messages unflushed" in capsys.readouterr().err
+
+
+def test_clean_summary_reports_success(capsys: pytest.CaptureFixture[str]) -> None:
+    summary, _, _ = _run_full(_cfg(), max_events=20)
+    assert report(summary) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_feed_poll_timeout_is_bounded_while_emissions_are_pending() -> None:
+    _, _, feed = _run_full(_cfg(speed=1e5, late_rate=1.0, dup_rate=0.0), max_events=60)
+    assert max(feed.timeouts[1:]) <= 0.1
 
 
 def test_summary_adds_up() -> None:

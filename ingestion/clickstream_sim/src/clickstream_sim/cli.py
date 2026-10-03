@@ -1,5 +1,6 @@
 import argparse
 import heapq
+import itertools
 import json
 import os
 import random
@@ -34,6 +35,8 @@ class Feed(Protocol):
 
 
 class Sink(Protocol):
+    errors: int
+
     def produce(self, emission: Emission, fallback: datetime | None = None) -> None: ...
 
     def flush(self) -> int: ...
@@ -107,6 +110,8 @@ def run(
     )
 
     heap: list[tuple[float, int, Emission, datetime, bool]] = []
+    tie_breaker = itertools.count()
+    unflushed = 0
     generated = 0
     counts = {"produced": 0, "duplicates": 0, "bad": 0, "late": 0, "schema_v2": 0}
     try:
@@ -115,7 +120,8 @@ def run(
             if not generating and not heap:
                 break
             if generating:
-                order = feed.poll(0.0 if heap else IDLE_POLL_S)
+                wait = min(max(heap[0][0] - now(), 0.0), MAX_WAIT_S) if heap else IDLE_POLL_S
+                order = feed.poll(wait)
                 if order is not None:
                     sessions = [converting_session(order, catalogue, rng)]
                     for _ in range(cfg.browsing_ratio):
@@ -134,7 +140,7 @@ def run(
                             due = now() + emission.delay_s / cfg.speed
                             bad = emission.event is not event
                             heapq.heappush(
-                                heap, (due, len(heap) + generated, emission, order.purchase_ts, bad)
+                                heap, (due, next(tie_breaker), emission, order.purchase_ts, bad)
                             )
             produced_now = False
             while heap and heap[0][0] <= now():
@@ -148,21 +154,39 @@ def run(
                 counts["bad"] += bad
                 counts["late"] += emission.delay_s >= LATE_THRESHOLD_S
                 counts["schema_v2"] += emission.schema_version == 2
-            if not produced_now and heap and not stop.is_set():
+            if not generating and not produced_now and heap and not stop.is_set():
                 sleep(min(max(heap[0][0] - now(), 0.0), MAX_WAIT_S))
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
-        producer.flush()
+        unflushed = producer.flush()
 
-    summary = {"events_unique": counts["produced"] - counts["duplicates"], **counts}
     summary = {
-        key: summary[key]
-        for key in ("events_unique", "duplicates", "bad", "late", "produced", "schema_v2")
+        "events_unique": counts["produced"] - counts["duplicates"],
+        "duplicates": counts["duplicates"],
+        "bad": counts["bad"],
+        "late": counts["late"],
+        "produced": counts["produced"],
+        "schema_v2": counts["schema_v2"],
+        "delivery_errors": producer.errors,
+        "unflushed": unflushed,
     }
     if summary_file is not None:
         summary_file.write_text(json.dumps(summary), encoding="utf-8")
     return summary
+
+
+def report(summary: dict[str, int]) -> int:
+    for key, value in summary.items():
+        print(f"{key}: {value}")
+    if summary["delivery_errors"] or summary["unflushed"]:
+        print(
+            f"error: {summary['delivery_errors']} delivery errors, "
+            f"{summary['unflushed']} messages unflushed",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,9 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     except psycopg.OperationalError:
         print("error: could not connect to postgres", file=sys.stderr)
         return 1
-    for key, value in summary.items():
-        print(f"{key}: {value}")
-    return 0
+    return report(summary)
 
 
 if __name__ == "__main__":
