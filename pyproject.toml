@@ -9,6 +9,7 @@ dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit"]
 
 [tool.uv.workspace]
 members = ["ingestion/*"]
+exclude = ["ingestion/debezium"]
 
 [tool.ruff]
 line-length = 100

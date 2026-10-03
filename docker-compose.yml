@@ -76,9 +76,142 @@ services:
           memory: 256m
     networks: [retail]
 
+  redpanda:
+    profiles: [ingest]
+    image: redpandadata/redpanda:v26.2.3@sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --overprovisioned
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://127.0.0.1:${REDPANDA_PORT:-19092}
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+    ports:
+      - "127.0.0.1:${REDPANDA_PORT:-19092}:19092"
+      - "127.0.0.1:${SCHEMA_REGISTRY_PORT:-18081}:18081"
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+    networks: [retail]
+
+  redpanda-console:
+    profiles: [ingest]
+    image: redpandadata/console:v3.12.0@sha256:9dc0cd55db172c6be9c2ff8a51f33a14395f7675fa7fbc002c277f3b96115c27
+    environment:
+      CONFIG_FILEPATH: /etc/console/config.yaml
+    configs:
+      - source: console_config
+        target: /etc/console/config.yaml
+    ports:
+      - "127.0.0.1:${CONSOLE_PORT:-8080}:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks: [retail]
+
+  kafka-connect:
+    profiles: [ingest]
+    build: ingestion/debezium
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: redpanda:9092
+      CONNECT_GROUP_ID: retail-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx1g
+    ports:
+      - "127.0.0.1:${CONNECT_PORT:-8083}:8083"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+    networks: [retail]
+
+  spark:
+    profiles: [ingest]
+    build: lakehouse/spark
+    command: ["spark-submit", "/opt/lakehouse/src/lakehouse_spark/bronze/app.py"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+    ports:
+      - "127.0.0.1:4040:4040"
+    volumes:
+      - ./lakehouse/spark:/opt/lakehouse:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+    networks: [retail]
+
+configs:
+  console_config:
+    content: |
+      kafka:
+        brokers: ["redpanda:9092"]
+      schemaRegistry:
+        enabled: true
+        urls: ["http://redpanda:8081"]
+      kafkaConnect:
+        enabled: true
+        clusters:
+          - name: debezium
+            url: http://kafka-connect:8083
+
 volumes:
   pgdata:
   miniodata:
+  redpandadata:
 
 networks:
   retail:

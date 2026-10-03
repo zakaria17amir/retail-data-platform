@@ -55,3 +55,8 @@ Thumbs.db
 
 # Kaggle raw data
 data/raw/
+
+# Spark local artefacts
+spark-warehouse/
+metastore_db/
+derby.log
