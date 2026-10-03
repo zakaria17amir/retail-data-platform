@@ -1,5 +1,10 @@
 SHELL := /bin/sh
+# .env is a default; a POSTGRES_DSN set in the shell must win so tests/one-offs never hit the dev DB by accident
+SHELL_POSTGRES_DSN := $(POSTGRES_DSN)
 -include .env
+ifneq ($(SHELL_POSTGRES_DSN),)
+POSTGRES_DSN := $(SHELL_POSTGRES_DSN)
+endif
 export
 
 PROFILE ?= core
