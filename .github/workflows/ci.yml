@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages --group dev
+      - run: make lint
+      - run: make test
+
+  integration:
+    needs: lint-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages --group dev
+      - run: cp .env.example .env
+      - run: make up
+      - run: make seed-sample
+      - run: make status | tee status.txt
+      - run: |
+          grep -q '^orders: 200$' status.txt
+      - run: make test-integration
+      - if: failure()
+        run: docker compose --profile core logs --tail 50
+      - if: always()
+        run: make down

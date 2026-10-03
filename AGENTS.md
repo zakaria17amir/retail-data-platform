@@ -42,4 +42,5 @@ Rules for every specialist:
 3. Finish with the verification commands named in the task, run them, and report: files changed,
    test/lint output (verbatim tail), anything you could not do, and open questions. No success claims
    without the output to back them.
-4. Do not commit, push, or create PRs — the lead does that after review.
+4. Commit your task's work on the current task branch with conventional-commit messages. Never
+   push, merge, or open PRs — the lead reviews and integrates.
