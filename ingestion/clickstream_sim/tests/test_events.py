@@ -78,7 +78,7 @@ def test_product_views_share_category_and_end_on_purchased_product(
 def test_browsing_session_has_no_checkout_and_no_customer(catalogue: Catalogue) -> None:
     at = datetime(2017, 6, 1, 9, 0, 0)
     for seed in range(20):
-        events = browsing_session(at, catalogue, random.Random(seed))
+        events = browsing_session(at, catalogue, random.Random(seed), "o1:browse:0")
         assert events[0].event_type == "page_view"
         assert all(e.event_type != "checkout_started" for e in events)
         assert all(e.customer_id is None and e.order_id is None for e in events)
@@ -92,10 +92,28 @@ def test_same_seed_same_events(order: OrderRef, catalogue: Catalogue) -> None:
     first = converting_session(order, catalogue, random.Random(3))
     assert first == converting_session(order, catalogue, random.Random(3))
     at = datetime(2017, 6, 1)
-    assert browsing_session(at, catalogue, random.Random(3)) == browsing_session(
-        at, catalogue, random.Random(3)
+    assert browsing_session(at, catalogue, random.Random(3), "o1:browse:0") == browsing_session(
+        at, catalogue, random.Random(3), "o1:browse:0"
     )
     assert first != converting_session(order, catalogue, random.Random(4))
+
+
+def test_event_ids_derive_from_session_and_step_not_rng(
+    order: OrderRef, catalogue: Catalogue
+) -> None:
+    other = OrderRef("o2", order.customer_id, order.purchase_ts, order.product_ids)
+    first = converting_session(order, catalogue, random.Random(3))
+    second = converting_session(other, catalogue, random.Random(3))
+    assert {e.event_id for e in first}.isdisjoint(e.event_id for e in second)
+    assert first[-1].session_id != second[-1].session_id
+    at = datetime(2017, 6, 1)
+    browse_a = browsing_session(at, catalogue, random.Random(3), "o1:browse:0")
+    browse_b = browsing_session(at, catalogue, random.Random(3), "o1:browse:1")
+    assert {e.event_id for e in browse_a}.isdisjoint(e.event_id for e in browse_b)
+    assert browse_a[0].session_id != browse_b[0].session_id
+    assert [e.event_id for e in first] == [
+        e.event_id for e in converting_session(order, catalogue, random.Random(3))
+    ]
 
 
 def test_to_dict_v1_has_no_utm_and_matches_schema_fields(
@@ -151,5 +169,5 @@ def test_microsecond_timestamps_stay_inside_window(
     stamps = [_ts(e) for e in converting_session(order, catalogue, rng)]
     assert stamps[-1] <= purchase.replace(microsecond=0)
     assert stamps[0] >= purchase.replace(microsecond=0) - timedelta(minutes=30)
-    browsing = browsing_session(purchase, catalogue, random.Random(1))
+    browsing = browsing_session(purchase, catalogue, random.Random(1), "o1:browse:0")
     assert _ts(browsing[0]) == purchase.replace(microsecond=0)

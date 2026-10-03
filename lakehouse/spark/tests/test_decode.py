@@ -1,3 +1,4 @@
+from datetime import datetime
 from urllib.error import URLError
 
 import pytest
@@ -115,6 +116,19 @@ def test_bad_timestamp_quarantined(spark: SparkSession, event_ts: str) -> None:
     assert good.count() == 0
     assert _reasons(bad) == ["unparseable_timestamp"]
     assert bad.collect()[0].raw_value is not None
+
+
+@pytest.mark.parametrize(
+    ("event_ts", "good_count"), [("2030-06-01T12:00:00", 1), ("2099-12-31T00:00:00", 0)]
+)
+def test_future_bound_follows_kafka_timestamp_not_wall_clock(
+    spark: SparkSession, event_ts: str, good_count: int
+) -> None:
+    rows = [(encode(EVENT_V1, event(event_ts=event_ts), 1), TOPIC)]
+    batch = raw_batch(spark, rows, kafka_ts=datetime(2030, 6, 1, 12, 0, 0))
+    good, bad = decode_batch(batch, REGISTRY, "events")
+    assert good.count() == good_count
+    assert _reasons(bad) == ["unparseable_timestamp"] * (1 - good_count)
 
 
 def test_cdc_null_before_and_after_quarantined(spark: SparkSession) -> None:

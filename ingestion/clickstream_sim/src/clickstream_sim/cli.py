@@ -131,12 +131,13 @@ def run(
                 order = feed.poll(wait)
                 if order is not None:
                     sessions = [converting_session(order, catalogue, rng)]
-                    for _ in range(cfg.browsing_ratio):
+                    for i in range(cfg.browsing_ratio):
                         jitter = timedelta(
                             seconds=rng.randint(-BROWSING_JITTER_S, BROWSING_JITTER_S)
                         )
+                        key = f"{order.order_id}:browse:{i}"
                         sessions.append(
-                            browsing_session(order.purchase_ts + jitter, catalogue, rng)
+                            browsing_session(order.purchase_ts + jitter, catalogue, rng, key)
                         )
                     for event in (e for session in sessions for e in session):
                         if max_events is not None and generated >= max_events:

@@ -1,4 +1,5 @@
 import hashlib
+import itertools
 import random
 import uuid
 from collections import defaultdict
@@ -13,6 +14,7 @@ REFERRERS = ("direct", "google", "instagram", "email", None)
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S"
 SESSION_WINDOW_SECONDS = 30 * 60
+EVENT_ID_NAMESPACE = uuid.UUID("5b0f8c1e-2d4a-4c6e-9f3b-7a1d2e8c4b90")
 
 
 @dataclass(frozen=True)
@@ -76,8 +78,8 @@ class OrderRef:
     product_ids: tuple[str, ...]
 
 
-def _event_id(rng: random.Random) -> str:
-    return str(uuid.UUID(int=rng.getrandbits(128), version=4))
+def _session_id(key: str) -> str:
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
 
 
 def _search_query(category: str | None) -> str:
@@ -98,6 +100,7 @@ class _Builder:
         self.customer_id = customer_id
         self.device = rng.choice(DEVICES)
         self.referrer = rng.choice(REFERRERS)
+        self.steps = itertools.count()
 
     def make(
         self,
@@ -109,8 +112,9 @@ class _Builder:
         quantity: int | None = None,
         order_id: str | None = None,
     ) -> Event:
+        step = next(self.steps)
         return Event(
-            event_id=_event_id(self.rng),
+            event_id=str(uuid.uuid5(EVENT_ID_NAMESPACE, f"{self.session_id}:{step}")),
             event_type=event_type,
             session_id=self.session_id,
             customer_id=self.customer_id,
@@ -125,9 +129,7 @@ class _Builder:
 
 
 def converting_session(order: OrderRef, catalogue: Catalogue, rng: random.Random) -> list[Event]:
-    builder = _Builder(
-        rng, hashlib.sha1(order.order_id.encode()).hexdigest()[:16], order.customer_id
-    )
+    builder = _Builder(rng, _session_id(order.order_id), order.customer_id)
     purchased = rng.choice(order.product_ids)
     category = catalogue.category_of.get(purchased)
 
@@ -147,9 +149,10 @@ def converting_session(order: OrderRef, catalogue: Catalogue, rng: random.Random
     ]
 
 
-def browsing_session(at: datetime, catalogue: Catalogue, rng: random.Random) -> list[Event]:
-    session_id = hashlib.sha1(str(rng.getrandbits(64)).encode()).hexdigest()[:16]
-    builder = _Builder(rng, session_id, None)
+def browsing_session(
+    at: datetime, catalogue: Catalogue, rng: random.Random, key: str
+) -> list[Event]:
+    builder = _Builder(rng, _session_id(key), None)
     first = catalogue.random_product(rng, None)
     category = catalogue.category_of.get(first)
 

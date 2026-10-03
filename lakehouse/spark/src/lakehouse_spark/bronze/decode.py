@@ -69,7 +69,7 @@ def _validation_reason(source: str) -> Column:
         ).when(
             parsed.isNull()
             | (F.year(parsed) < MIN_EVENT_YEAR)
-            | (parsed > F.current_timestamp() + F.expr("INTERVAL 1 DAY")),
+            | (parsed > F.col("kafka_timestamp") + F.expr("INTERVAL 1 DAY")),
             "unparseable_timestamp",
         )
     return F.when(F.col("after").isNull() & F.col("before").isNull(), "null_payload")

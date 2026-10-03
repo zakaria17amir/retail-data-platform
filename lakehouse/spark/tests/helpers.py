@@ -118,9 +118,10 @@ class BrokenRegistry:
         raise URLError("registry down")
 
 
-def raw_batch(spark: SparkSession, rows: Sequence[tuple[bytes | None, str]]) -> DataFrame:
-    data = [
-        (None, value, topic, 0, offset, datetime(2017, 6, 1, 12, 0, 0))
-        for offset, (value, topic) in enumerate(rows)
-    ]
+def raw_batch(
+    spark: SparkSession,
+    rows: Sequence[tuple[bytes | None, str]],
+    kafka_ts: datetime = datetime(2017, 6, 1, 12, 0, 0),
+) -> DataFrame:
+    data = [(None, value, topic, 0, offset, kafka_ts) for offset, (value, topic) in enumerate(rows)]
     return spark.createDataFrame(data, RAW_SCHEMA)

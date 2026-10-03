@@ -167,6 +167,38 @@ def test_same_seed_same_summary_and_summary_file(tmp_path: Path) -> None:
     assert json.loads(target.read_text()) == first
 
 
+def _event_ids(orders: list[OrderRef]) -> list[str | None]:
+    clock = [0.0]
+    producer = FakeProducer(clock)
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    run(
+        _cfg(bad_rate=0.0, dup_rate=0.0),
+        max_events=30,
+        summary_file=None,
+        sleep=sleep,
+        now=lambda: clock[0],
+        feed=FakeFeed(orders, clock),
+        producer=producer,
+        catalogue=CATALOGUE,
+    )
+    return [e.event.event_id for _, e, _ in producer.sent]
+
+
+def test_same_seed_runs_over_different_orders_have_disjoint_event_ids() -> None:
+    orders = _orders(3)
+    renamed = [
+        OrderRef(f"x{o.order_id}", o.customer_id, o.purchase_ts, o.product_ids) for o in orders
+    ]
+    first = _event_ids(orders)
+    assert len(first) == 30
+    assert len(set(first)) == 30
+    assert set(first).isdisjoint(_event_ids(renamed))
+    assert _event_ids(orders) == first
+
+
 def test_config_from_env_defaults_and_overrides() -> None:
     env = {
         "KAFKA_BOOTSTRAP": "redpanda:9092",
