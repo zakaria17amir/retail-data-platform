@@ -6,8 +6,9 @@ before writing code. Anything not in the spec needs a spec change first — do n
 
 ## Conventions
 
-- Python 3.12, `uv` workspace (one lockfile at root, one package per top-level directory).
-  `uv run <cmd>` for everything; never `pip install` ad hoc.
+- Python 3.12, `uv` workspace (one lockfile at root, one package per top-level directory) in a
+  project-local `.venv/` created by `uv sync` and pinned by `.python-version`. Never use the system
+  Python (3.14) or a global site-packages; `uv run <cmd>` for everything; never `pip install` ad hoc.
 - `ruff` (lint + format) and `mypy --strict` must pass. SQL in dbt is `sqlfluff`-clean.
 - Tests with `pytest`; TDD: failing test first, then the minimum code to pass. Pure functions for all
   transformation/cleaning logic so they are testable without infrastructure.
