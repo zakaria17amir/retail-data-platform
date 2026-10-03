@@ -15,8 +15,11 @@ PROFILE ?= core
 up:
 	docker compose --profile $(PROFILE) up -d
 	docker compose --profile $(PROFILE) up -d --wait $$(docker compose --profile $(PROFILE) config --services | grep -v -e '-init$$')
-	@docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q '^minio-init exited 0$$' \
-		|| { echo "minio-init failed"; docker compose --profile $(PROFILE) logs minio-init; exit 1; }
+	@for s in $$(docker compose --profile $(PROFILE) config --services | grep -e '-init$$'); do \
+		docker wait $$(docker compose --profile $(PROFILE) ps -aq $$s) >/dev/null; \
+		docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q "^$$s exited 0$$" \
+			|| { echo "$$s failed"; docker compose --profile $(PROFILE) logs $$s; exit 1; }; \
+	done
 
 down:
 	docker compose --profile '*' down

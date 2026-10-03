@@ -168,6 +168,26 @@ services:
           memory: 1500m
     networks: [retail]
 
+  connect-init:
+    profiles: [ingest]
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./ingestion/debezium:/debezium:ro
+    entrypoint: ["sh", "/debezium/register.sh"]
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks: [retail]
+
   spark:
     profiles: [ingest]
     build: lakehouse/spark
