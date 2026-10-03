@@ -84,8 +84,9 @@ jobs:
       # connect-init needs publication olist_cdc, created by `replayer seed`
       - run: make up
       - run: make seed-sample
-      - run: make up PROFILE=ingest
+      # before `up PROFILE=ingest` so two 4 GiB spark containers never run at once
       - run: make test-spark
+      - run: make up PROFILE=ingest
       - env:
           PYTEST_ADDOPTS: "-rs --strict-markers"
         run: |

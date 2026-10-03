@@ -28,10 +28,22 @@ docker compose --profile ingest up -d --force-recreate spark   # `restart` keeps
 
 ## Replay and clickstream
 
+Start the simulator first, in a second terminal: it consumes CDC `orders` from the latest offset,
+so orders replayed before it joined get no clickstream. Wait until its consumer group is Stable,
+then replay:
+
 ```sh
+make sim SIM_ARGS="--max-events 2000"                            # terminal 2
+docker compose exec redpanda rpk group describe clickstream-sim  # until STATE is Stable
 make replay REPLAY_ARGS="--from 2017-10-02 --until 2017-10-03 --speed 7200"
-make sim SIM_ARGS="--max-events 2000"
 ```
+
+**Forward only.** The `events_to_bronze` watermark (72 h behind the newest dataset time seen) is
+persisted in its checkpoint. Replay windows must move forward in dataset time relative to what
+bronze has seen; an earlier window, or restarting the `demo` containers (the replayer starts
+again at the beginning of its window), has its events dropped behind the watermark (logged as a WARNING with
+`numRowsDroppedByWatermark`, not quarantined). Before going back in time, run
+[`make reset-bronze`](#reset-bronze).
 
 One dataset day at speed 7200 takes ~10 min: the lifecycle updates of orders placed that day span
 ~75 dataset days after the window. Long inactivity

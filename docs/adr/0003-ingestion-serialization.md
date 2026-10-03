@@ -16,19 +16,25 @@ Delta without losing rows to schema evolution, late or duplicated events, or bad
   exact writer schema, so a v2 schema adds columns instead of misdecoding. PERMISSIVE `from_avro`
   returns an all-null struct on failure, so a row is "undecoded" when its first non-nullable field
   is null.
-- **Dedupe:** Kafka key = `event_id`, Kafka timestamp = `event_ts` (dataset time; the sim falls back
-  to the order's dataset time for unparseable/out-of-range values so the watermark is not pushed
-  forward). `dropDuplicatesWithinWatermark` (48 h) runs on those columns before decoding.
+- **Dedupe:** Kafka key = `event_id` (identity-derived, `uuid5` of `session_id:step`, so reruns
+  never collide), Kafka timestamp = `event_ts` (dataset time; the sim falls back to the order's
+  dataset time for bad values, never pushing the watermark ahead). `dropDuplicatesWithinWatermark`
+  runs before decoding; watermark 72 h (sim lateness ≤ 48 h + session/browsing offsets + margin).
+  Rows behind it, late originals and duplicates alike, are dropped and logged per batch as a
+  WARNING with `numRowsDroppedByWatermark`; they are not quarantined.
 - **Quarantine** (`bronze/_quarantine/{olist,events}`, raw bytes kept): `null_payload`,
   `not_wire_format`, `unknown_schema_id` (registry 404), `avro_decode_failed`, `null_primary_key`,
-  `unparseable_timestamp`. An unreachable registry fails the batch so it is retried.
+  `unparseable_timestamp` (incl. `event_ts` > `kafka_timestamp` + 1 day: dataset time, not wall
+  clock). An unreachable registry fails the batch so it is retried.
 - **Idempotent writes:** Delta `txnAppId` = `{query}[-BRONZE_RUN_ID]-{topic}` / `-quarantine`,
   `txnVersion` = batch id.
 
 ## Consequences
-- Duplicates arriving more than 48 h (event time) apart reach bronze; silver dedupes them.
-- Resetting checkpoints requires clearing `bronze/` or a new `BRONZE_RUN_ID`, else Delta skips the
-  replayed batch ids as already committed.
+- Duplicates > 72 h (event time) late are dropped behind the watermark, not written to bronze.
+- Forward-only: the watermark persists in the checkpoint, so replay windows must move forward in
+  dataset time relative to what bronze has seen; otherwise reset with `make reset-bronze`.
+- New checkpoints need a cleared `bronze/` or a new `BRONZE_RUN_ID`, else Delta skips old batch ids.
+- Host deps: `deltalake`, `pyarrow` (bronze status), `fastavro` (tests), host `pyspark` (workspace).
 
 | Component | Version |
 |---|---|
