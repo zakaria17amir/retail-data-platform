@@ -49,12 +49,29 @@ make status
 make seed-sample
 ```
 
+### Ingest (CDC + clickstream → bronze Delta)
+
+```sh
+make up PROFILE=ingest   # Redpanda, Console, Kafka Connect + Debezium, Spark bronze app
+make sim SIM_ARGS="--max-events 2000"   # second terminal, first: it only sees orders from now on
+docker compose exec redpanda rpk group describe clickstream-sim   # wait for STATE Stable
+make replay REPLAY_ARGS="--from 2017-10-02 --until 2017-10-03 --speed 7200"
+make status              # Postgres counts + bronze/quarantine Delta counts
+```
+
+Replay windows must move forward in dataset time: Spark's events watermark is kept in its
+checkpoint, so the clickstream of an earlier window (or of restarted demo containers) is dropped.
+Run `make reset-bronze` first ([reset recipe](docs/runbooks/ingestion.md#reset-bronze)).
+
+Redpanda Console at http://127.0.0.1:8080, Spark UI at http://127.0.0.1:4040. Details, reset
+and quarantine inspection: [docs/runbooks/ingestion.md](docs/runbooks/ingestion.md).
+
 ## Status
 
 | # | Phase | Status |
 |---|-------|--------|
 | 0 | Foundation | In progress |
-| 1 | Ingestion | Planned |
+| 1 | Ingestion | In progress: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
 | 2 | Lakehouse | Planned |
 | 3 | Analytics | Planned |
 | 4 | Batch ML + MLOps | Planned |

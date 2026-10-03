@@ -2,7 +2,7 @@ name: retail
 
 services:
   postgres:
-    profiles: [core]
+    profiles: [core, ingest, demo]
     image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
@@ -32,7 +32,7 @@ services:
     networks: [retail]
 
   minio:
-    profiles: [core]
+    profiles: [core, ingest]
     # Silo (pgsty), maintained MinIO fork; minio/minio was removed from Docker Hub, see ADR-0002
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
@@ -56,7 +56,7 @@ services:
     networks: [retail]
 
   minio-init:
-    profiles: [core]
+    profiles: [core, ingest]
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
     depends_on:
       minio:
@@ -76,9 +76,218 @@ services:
           memory: 256m
     networks: [retail]
 
+  redpanda:
+    profiles: [ingest, demo]
+    image: redpandadata/redpanda:v26.2.3@sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9
+    command:
+      - redpanda
+      - start
+      - --mode
+      - dev-container
+      - --smp
+      - "1"
+      - --memory
+      - 1G
+      - --overprovisioned
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://127.0.0.1:${REDPANDA_PORT:-19092}
+      - --schema-registry-addr
+      - internal://0.0.0.0:8081,external://0.0.0.0:18081
+    ports:
+      - "127.0.0.1:${REDPANDA_PORT:-19092}:19092"
+      - "127.0.0.1:${SCHEMA_REGISTRY_PORT:-18081}:18081"
+    volumes:
+      - redpandadata:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+    networks: [retail]
+
+  redpanda-console:
+    profiles: [ingest]
+    image: redpandadata/console:v3.12.0@sha256:9dc0cd55db172c6be9c2ff8a51f33a14395f7675fa7fbc002c277f3b96115c27
+    environment:
+      CONFIG_FILEPATH: /etc/console/config.yaml
+    configs:
+      - source: console_config
+        target: /etc/console/config.yaml
+    ports:
+      - "127.0.0.1:${CONSOLE_PORT:-8080}:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks: [retail]
+
+  kafka-connect:
+    profiles: [ingest]
+    build: ingestion/debezium
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: redpanda:9092
+      CONNECT_GROUP_ID: retail-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect_status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      CONNECT_KEY_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_VALUE_CONVERTER: io.confluent.connect.avro.AvroConverter
+      CONNECT_KEY_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+      CONNECT_VALUE_CONVERTER_SCHEMA_REGISTRY_URL: http://redpanda:8081
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_REST_ADVERTISED_HOST_NAME: kafka-connect
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx1g
+    ports:
+      - "127.0.0.1:${CONNECT_PORT:-8083}:8083"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+    networks: [retail]
+
+  connect-init:
+    profiles: [ingest]
+    image: curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+    depends_on:
+      kafka-connect:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./ingestion/debezium:/debezium:ro
+    entrypoint: ["sh", "/debezium/register.sh"]
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks: [retail]
+
+  spark:
+    profiles: [ingest]
+    build: lakehouse/spark
+    command: ["spark-submit", "/opt/lakehouse/src/lakehouse_spark/bronze/app.py"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      BRONZE_RUN_ID: ${BRONZE_RUN_ID:-}
+    ports:
+      - "127.0.0.1:4040:4040"
+    volumes:
+      - ./lakehouse/spark:/opt/lakehouse:ro
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+    networks: [retail]
+
+  replayer:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: ingestion/replayer/Dockerfile
+    command: ["live", "--loop"]
+    environment:
+      OLIST_DATA_DIR: /data/olist
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REPLAY_SPEED: ${REPLAY_SPEED:-3600}
+    volumes:
+      - type: bind
+        source: ${OLIST_DATA_DIR}
+        target: /data/olist
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    networks: [retail]
+
+  clickstream-sim:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: ingestion/clickstream_sim/Dockerfile
+    command: ["run"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REPLAY_SPEED: ${REPLAY_SPEED:-3600}
+      SIM_LATE_RATE: ${SIM_LATE_RATE:-0.05}
+      SIM_LATE_MAX_HOURS: ${SIM_LATE_MAX_HOURS:-48}
+      SIM_DUP_RATE: ${SIM_DUP_RATE:-0.01}
+      SIM_BAD_RATE: ${SIM_BAD_RATE:-0.0}
+      SIM_SCHEMA_EVOLVE_AFTER: ${SIM_SCHEMA_EVOLVE_AFTER:-0}
+      SIM_BROWSING_RATIO: ${SIM_BROWSING_RATIO:-3}
+      SIM_SEED: ${SIM_SEED:-42}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [retail]
+
+configs:
+  console_config:
+    content: |
+      kafka:
+        brokers: ["redpanda:9092"]
+      schemaRegistry:
+        enabled: true
+        urls: ["http://redpanda:8081"]
+      kafkaConnect:
+        enabled: true
+        clusters:
+          - name: debezium
+            url: http://kafka-connect:8083
+
 volumes:
   pgdata:
   miniodata:
+  redpandadata:
 
 networks:
   retail:

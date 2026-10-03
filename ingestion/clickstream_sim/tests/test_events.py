@@ -1,0 +1,173 @@
+import json
+import random
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import pytest
+from clickstream_sim.events import Catalogue, Event, OrderRef, browsing_session, converting_session
+
+SCHEMAS = Path(__file__).resolve().parents[2] / "schemas" / "events"
+
+
+@pytest.fixture
+def catalogue() -> Catalogue:
+    by_category = {
+        "toys": ("p1", "p2", "p3", "p4"),
+        "books": ("p5", "p6", "p7"),
+    }
+    category_of = {p: c for c, ps in by_category.items() for p in ps}
+    return Catalogue(by_category=by_category, category_of=category_of)
+
+
+@pytest.fixture
+def order() -> OrderRef:
+    return OrderRef(
+        order_id="o1",
+        customer_id="c1",
+        purchase_ts=datetime(2017, 6, 1, 12, 0, 0),
+        product_ids=("p2", "p6"),
+    )
+
+
+@pytest.fixture
+def rng() -> random.Random:
+    return random.Random(7)
+
+
+def _ts(event: Event) -> datetime:
+    return datetime.fromisoformat(event.event_ts)
+
+
+def test_converting_session_ends_in_checkout_with_order_id(
+    order: OrderRef, catalogue: Catalogue, rng: random.Random
+) -> None:
+    events = converting_session(order, catalogue, rng)
+    assert events[0].event_type == "page_view"
+    assert events[-1].event_type == "checkout_started"
+    assert events[-1].order_id == order.order_id
+    carts = [e for e in events if e.event_type == "add_to_cart"]
+    assert sorted(e.product_id or "" for e in carts) == sorted(order.product_ids)
+    assert all(e.quantity == 1 for e in carts)
+    assert len({e.session_id for e in events}) == 1
+    assert {e.customer_id for e in events} == {order.customer_id}
+    assert len({e.event_id for e in events}) == len(events)
+
+
+def test_converting_session_ts_strictly_increasing_within_30min(
+    order: OrderRef, catalogue: Catalogue, rng: random.Random
+) -> None:
+    stamps = [_ts(e) for e in converting_session(order, catalogue, rng)]
+    assert stamps == sorted(set(stamps))
+    assert stamps[0] >= order.purchase_ts - timedelta(minutes=30)
+    assert stamps[-1] <= order.purchase_ts
+
+
+def test_product_views_share_category_and_end_on_purchased_product(
+    order: OrderRef, catalogue: Catalogue
+) -> None:
+    for seed in range(20):
+        events = converting_session(order, catalogue, random.Random(seed))
+        views = [e.product_id for e in events if e.event_type == "product_view"]
+        assert 2 <= len(views) <= 5
+        assert views[-1] in order.product_ids
+        assert {catalogue.category_of[p or ""] for p in views} == {
+            catalogue.category_of[views[-1] or ""]
+        }
+
+
+def test_browsing_session_has_no_checkout_and_no_customer(catalogue: Catalogue) -> None:
+    at = datetime(2017, 6, 1, 9, 0, 0)
+    for seed in range(20):
+        events = browsing_session(at, catalogue, random.Random(seed), "o1:browse:0")
+        assert events[0].event_type == "page_view"
+        assert all(e.event_type != "checkout_started" for e in events)
+        assert all(e.customer_id is None and e.order_id is None for e in events)
+        assert any(e.event_type == "product_view" for e in events)
+        stamps = [_ts(e) for e in events]
+        assert stamps == sorted(set(stamps))
+        assert stamps[0] == at
+
+
+def test_same_seed_same_events(order: OrderRef, catalogue: Catalogue) -> None:
+    first = converting_session(order, catalogue, random.Random(3))
+    assert first == converting_session(order, catalogue, random.Random(3))
+    at = datetime(2017, 6, 1)
+    assert browsing_session(at, catalogue, random.Random(3), "o1:browse:0") == browsing_session(
+        at, catalogue, random.Random(3), "o1:browse:0"
+    )
+    assert first != converting_session(order, catalogue, random.Random(4))
+
+
+def test_event_ids_derive_from_session_and_step_not_rng(
+    order: OrderRef, catalogue: Catalogue
+) -> None:
+    other = OrderRef("o2", order.customer_id, order.purchase_ts, order.product_ids)
+    first = converting_session(order, catalogue, random.Random(3))
+    second = converting_session(other, catalogue, random.Random(3))
+    assert {e.event_id for e in first}.isdisjoint(e.event_id for e in second)
+    assert first[-1].session_id != second[-1].session_id
+    at = datetime(2017, 6, 1)
+    browse_a = browsing_session(at, catalogue, random.Random(3), "o1:browse:0")
+    browse_b = browsing_session(at, catalogue, random.Random(3), "o1:browse:1")
+    assert {e.event_id for e in browse_a}.isdisjoint(e.event_id for e in browse_b)
+    assert browse_a[0].session_id != browse_b[0].session_id
+    assert [e.event_id for e in first] == [
+        e.event_id for e in converting_session(order, catalogue, random.Random(3))
+    ]
+
+
+def test_to_dict_v1_has_no_utm_and_matches_schema_fields(
+    order: OrderRef, catalogue: Catalogue, rng: random.Random
+) -> None:
+    event = converting_session(order, catalogue, rng)[0]
+    v1_fields = [
+        f["name"] for f in json.loads((SCHEMAS / "clickstream_event.v1.avsc").read_text())["fields"]
+    ]
+    v2_fields = [
+        f["name"] for f in json.loads((SCHEMAS / "clickstream_event.v2.avsc").read_text())["fields"]
+    ]
+    assert list(event.to_dict(1)) == v1_fields
+    assert "utm_campaign" not in event.to_dict(1)
+    assert list(event.to_dict(2)) == v2_fields
+    assert event.to_dict(2)["utm_campaign"] is None
+
+
+def test_none_category_purchased_product_still_valid_session(rng: random.Random) -> None:
+    catalogue = Catalogue.from_rows([("p1", None), ("p2", "toys"), ("p3", "toys")])
+    order = OrderRef("o9", "c9", datetime(2017, 6, 1, 12), ("p1",))
+    events = converting_session(order, catalogue, rng)
+    views = [e.product_id for e in events if e.event_type == "product_view"]
+    assert views[-1] == "p1"
+    assert events[-1].event_type == "checkout_started"
+
+
+def test_unknown_category_falls_back_to_all_products(rng: random.Random) -> None:
+    catalogue = Catalogue.from_rows([("p1", "toys"), ("p2", "books")])
+    assert catalogue.random_product(rng, "garden") in {"p1", "p2"}
+    assert catalogue.random_product(rng, None) in {"p1", "p2"}
+
+
+def test_empty_catalogue_raises(rng: random.Random) -> None:
+    with pytest.raises(ValueError, match="empty catalogue"):
+        Catalogue.from_rows([]).random_product(rng, None)
+    with pytest.raises(ValueError, match="empty catalogue"):
+        Catalogue({}, {}).random_product(rng, "toys")
+
+
+def test_from_rows_keeps_none_category_products_out_of_categories() -> None:
+    catalogue = Catalogue.from_rows([("p2", "toys"), ("p1", None), ("p3", "toys")])
+    assert catalogue.by_category == {"toys": ("p2", "p3")}
+    assert catalogue.category_of == {"p2": "toys", "p3": "toys"}
+    assert catalogue.all_products == ("p1", "p2", "p3")
+
+
+def test_microsecond_timestamps_stay_inside_window(
+    catalogue: Catalogue, rng: random.Random
+) -> None:
+    purchase = datetime(2017, 6, 1, 12, 0, 0, 999_999)
+    order = OrderRef("o1", "c1", purchase, ("p2",))
+    stamps = [_ts(e) for e in converting_session(order, catalogue, rng)]
+    assert stamps[-1] <= purchase.replace(microsecond=0)
+    assert stamps[0] >= purchase.replace(microsecond=0) - timedelta(minutes=30)
+    browsing = browsing_session(purchase, catalogue, random.Random(1), "o1:browse:0")
+    assert _ts(browsing[0]) == purchase.replace(microsecond=0)

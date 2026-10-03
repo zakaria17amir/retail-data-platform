@@ -1,0 +1,19 @@
+{
+  "type": "record",
+  "name": "ClickstreamEvent",
+  "namespace": "retail.events",
+  "fields": [
+    {"name": "event_id", "type": ["null", "string"], "default": null},
+    {"name": "event_type", "type": "string"},
+    {"name": "session_id", "type": ["null", "string"], "default": null},
+    {"name": "customer_id", "type": ["null", "string"], "default": null},
+    {"name": "device", "type": "string"},
+    {"name": "referrer", "type": ["null", "string"], "default": null},
+    {"name": "event_ts", "type": "string"},
+    {"name": "product_id", "type": ["null", "string"], "default": null},
+    {"name": "search_query", "type": ["null", "string"], "default": null},
+    {"name": "quantity", "type": ["null", "int"], "default": null},
+    {"name": "order_id", "type": ["null", "string"], "default": null},
+    {"name": "utm_campaign", "type": ["null", "string"], "default": null}
+  ]
+}

@@ -9,14 +9,17 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration download seed seed-sample sample status
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status
 
-# --wait treats exited one-shot *-init containers as failures, so wait on the long-running ones only
+# --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
 	docker compose --profile $(PROFILE) up -d
 	docker compose --profile $(PROFILE) up -d --wait $$(docker compose --profile $(PROFILE) config --services | grep -v -e '-init$$')
-	@docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q '^minio-init exited 0$$' \
-		|| { echo "minio-init failed"; docker compose --profile $(PROFILE) logs minio-init; exit 1; }
+	@for s in $$(docker compose --profile $(PROFILE) config --services | grep -e '-init$$'); do \
+		docker wait $$(docker compose --profile $(PROFILE) ps -aq $$s) >/dev/null; \
+		docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q "^$$s exited 0$$" \
+			|| { echo "$$s failed"; docker compose --profile $(PROFILE) logs $$s; exit 1; }; \
+	done
 
 down:
 	docker compose --profile '*' down
@@ -36,13 +39,16 @@ sync:
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy ingestion
+	uv run mypy ingestion lakehouse tests
 
 test:
-	uv run pytest -m "not integration"
+	uv run pytest -m "not integration and not spark and not ingest"
 
 test-integration:
 	uv run pytest -m integration
+
+test-spark:
+	docker compose --profile ingest run --rm --no-deps spark pytest -p no:cacheprovider -W ignore::pytest.PytestUnknownMarkWarning /opt/lakehouse/tests -m spark
 
 download:
 	uv run --package replayer replayer download --dest $(OLIST_DATA_DIR)
@@ -58,3 +64,17 @@ sample:
 
 status:
 	uv run --package replayer replayer status
+	uv run --package lakehouse-spark bronze status
+
+replay:
+	uv run --package replayer replayer live $(REPLAY_ARGS)
+
+sim:
+	uv run --package clickstream-sim clickstream-sim run $(SIM_ARGS)
+
+test-ingest:
+	@echo "WARNING: reseeds $$POSTGRES_DB with the sample fixture and clears bronze; set ALLOW_RESEED=1 to proceed"
+	uv run pytest -m ingest tests/integration
+
+reset-bronze:
+	sh ingestion/reset-bronze.sh $(or $(SEED),seed)

@@ -62,6 +62,18 @@ CREATE TABLE IF NOT EXISTS olist.order_reviews (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'order_reviews_review_id_order_id_key'
+          AND conrelid = 'olist.order_reviews'::regclass
+    ) THEN
+        ALTER TABLE olist.order_reviews
+            ADD CONSTRAINT order_reviews_review_id_order_id_key UNIQUE (review_id, order_id);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS olist.products (
     product_id text PRIMARY KEY,
     product_category_name text,

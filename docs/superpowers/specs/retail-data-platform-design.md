@@ -109,13 +109,21 @@ Default local run: 5k-product sample; full 32k overnight on GPU.
   Avro via Redpanda Schema Registry) → Spark Structured Streaming `cdc_to_bronze` → Delta
   `bronze/olist/<table>/`, append-only, partitioned by ingest date.
 - **Event path.** `clickstream_sim` → Redpanda `events.<type>` (Avro) → same Spark app, query
-  `events_to_bronze` → `bronze/events/<type>/`. Watermark 48 h; dedupe on `event_id` within watermark.
+  `events_to_bronze` → `bronze/events/<type>/`. Watermark 72 h (simulator lateness ≤ 48 h + session
+  offsets + margin) on the Kafka timestamp, which carries dataset time; dedupe on `event_id` within
+  the watermark. Rows behind the watermark are dropped by Spark and reported per micro-batch
+  (`numRowsDroppedByWatermark`, logged as a WARNING); they are not quarantined. Dataset time must
+  move forward between runs (or bronze is reset).
 - **Quarantine.** Records failing deserialization or basic sanity (null PK, unparseable timestamp) →
-  `bronze/_quarantine/<source>/` with raw payload + reason. Nothing is dropped silently.
+  `bronze/_quarantine/<source>/` with raw payload + reason. Nothing is dropped silently, except
+  streaming dedupe and watermark drops, which are counted and logged.
 - **Why Spark here.** Exactly-once Delta sinks with checkpointing, watermarking, scale; maps to EMR
   Serverless. It is the only Spark job family in the project.
 - **Containers.** `postgres`, `redpanda`, `redpanda-console`, `kafka-connect`, `minio`, `spark`
-  (single node locally), `replayer`, `clickstream-sim`. Profile `ingest`.
+  (single node locally): profile `ingest`. `replayer` and `clickstream-sim` run host-side
+  (`make replay`, `make sim`) or as long-running containers in profile `demo`, layered on `ingest`
+  (`docker compose --profile ingest --profile demo up`). This keeps `ingest` deterministic for the
+  integration test.
 - **Tests.** pytest for replayer/sim; integration test: replay 1 day, assert bronze = source + quarantine.
 
 ## 6. Lakehouse (silver)
@@ -220,6 +228,10 @@ contract test; image build. No DVC (MLflow + Delta time travel suffice).
    enriched titles; p95 < 50 ms target; cold-start → category popularity. Feedback loop via simulator
    gives CTR per model version in Power BI.
 
+Forward note: the events watermark (section 5) assumes dataset-time Kafka timestamps. The
+`/recommend` emitter must stamp the triggering event's dataset time; a single wall-clock record
+would push the watermark years ahead and drop all subsequent clickstream.
+
 Flink/Kafka Streams deliberately not used (one stream engine; documented as the sub-second choice).
 Containers: `redis`, `feast` push server. Profile `realtime`.
 
@@ -290,7 +302,8 @@ retail-data-platform/
 └── .github/workflows/  ci.yml nightly-evals.yml terraform-plan.yml docs.yml
 ```
 
-- Compose profiles: `core`, `ingest`, `lakehouse`, `analytics`, `ml`, `realtime`, `genai`,
+- Compose profiles: `core`, `ingest`, `demo` (long-running replayer + clickstream-sim on top of
+  `ingest`; `make demo` will use it), `lakehouse`, `analytics`, `ml`, `realtime`, `genai`,
   `observability`. `make up PROFILE=…`, `make seed`, `make replay`, `make test`, `make demo`
   (scripted 10-minute end-to-end; doubles as the e2e test).
 - Tooling: `uv`, Python 3.12, `ruff`, `mypy`, `pre-commit`, `sqlfluff`, `tflint`; all images pinned.

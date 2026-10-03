@@ -46,3 +46,54 @@ jobs:
         run: docker compose --profile core logs --tail 50
       - if: always()
         run: make down
+
+  ingest:
+    needs: lint-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked --all-packages --group dev
+      - run: |
+          cp .env.example .env
+          echo OLIST_DATA_DIR=tests/fixtures/olist_sample >> .env
+      - uses: docker/setup-buildx-action@v4
+      # tags match Compose's default image names (project "retail"), so `make up` reuses these builds
+      - uses: docker/bake-action@v7
+        with:
+          source: .
+          files: docker-compose.yml
+          targets: kafka-connect,spark,replayer,clickstream-sim
+          load: true
+          set: |
+            kafka-connect.tags=retail-kafka-connect
+            kafka-connect.cache-from=type=gha,scope=kafka-connect
+            kafka-connect.cache-to=type=gha,scope=kafka-connect,mode=max
+            spark.tags=retail-spark
+            spark.cache-from=type=gha,scope=spark
+            spark.cache-to=type=gha,scope=spark,mode=max
+            replayer.tags=retail-replayer
+            replayer.cache-from=type=gha,scope=replayer
+            replayer.cache-to=type=gha,scope=replayer,mode=max
+            clickstream-sim.tags=retail-clickstream-sim
+            clickstream-sim.cache-from=type=gha,scope=clickstream-sim
+            clickstream-sim.cache-to=type=gha,scope=clickstream-sim,mode=max
+      # connect-init needs publication olist_cdc, created by `replayer seed`
+      - run: make up
+      - run: make seed-sample
+      # before `up PROFILE=ingest` so two 4 GiB spark containers never run at once
+      - run: make test-spark
+      - run: make up PROFILE=ingest
+      - env:
+          PYTEST_ADDOPTS: "-rs --strict-markers"
+        run: |
+          set -o pipefail
+          ALLOW_RESEED=1 make test-ingest | tee ingest.txt
+          grep -q ' passed' ingest.txt && ! grep -q ' skipped' ingest.txt
+      - if: failure()
+        run: docker compose --profile ingest logs --tail 100
+      - if: always()
+        run: make down

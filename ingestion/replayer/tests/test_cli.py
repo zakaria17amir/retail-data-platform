@@ -20,3 +20,25 @@ def test_malformed_dsn_reports_cleanly(
     err = capsys.readouterr().err
     assert "invalid POSTGRES_DSN" in err
     assert "Traceback" not in err
+
+
+@pytest.mark.parametrize(
+    ("argv", "env", "message"),
+    [
+        (["live", "--speed", "0"], {}, "--speed must be > 0"),
+        (["live", "--speed", "-5"], {}, "--speed must be > 0"),
+        (["live"], {"REPLAY_SPEED": "fast"}, "REPLAY_SPEED must be a number"),
+        (["live", "--from", "2017-01-01T00:00:00+00:00"], {}, "naive datetimes"),
+    ],
+)
+def test_live_rejects_invalid_arguments(
+    argv: list[str],
+    env: dict[str, str],
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    assert main(argv) == 1
+    assert message in capsys.readouterr().err

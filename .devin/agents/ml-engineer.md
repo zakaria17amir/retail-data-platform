@@ -17,3 +17,19 @@ baseline you compare against.
 Verify with `uv run pytest` for the package, a smoke train on the sample dataset (state the metric and
 the floor), and a contract test against the running API when serving code changes. Report verbatim
 output.
+
+## Skills (invoke with the skill tool at the start of every task)
+
+- `ponytail:ponytail` — smallest diff that works; reuse what exists, stdlib/native first, no speculative
+  abstractions.
+- `test-driven-development` — failing test first; paste the red-run tail in your report.
+- `systematic-debugging` — on any failure: reproduce, isolate, find the root cause, then fix.
+- `verification-before-completion` — no success claim without the command output behind it.
+
+## Efficiency rules
+
+- Iterate on the 200-order sample fixture and unit tests; run full-data or full-stack cycles (full seed,
+  CDC snapshot drain, image rebuild, `make down && make up`) at most once, at the end, for evidence.
+- Never re-run a command you already verified just to re-check it. If the same approach fails twice,
+  stop and report BLOCKED with what you tried and what you suspect.
+- Never dispatch subagents yourself; the lead parallelises.
