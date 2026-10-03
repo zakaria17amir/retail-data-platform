@@ -1,0 +1,21 @@
+[project]
+name = "replayer"
+version = "0.1.0"
+description = "Replays Olist rows into Postgres"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "psycopg[binary]",
+  "polars",
+  "kagglehub",
+  "python-dotenv",
+]
+
+[project.scripts]
+replayer = "replayer.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/replayer"]
