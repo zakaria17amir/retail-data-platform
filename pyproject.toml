@@ -8,7 +8,7 @@ requires-python = ">=3.12,<3.13"
 dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit"]
 
 [tool.uv.workspace]
-members = ["ingestion/replayer"]
+members = ["ingestion/replayer", "ingestion/clickstream_sim"]
 
 [tool.ruff]
 line-length = 100
