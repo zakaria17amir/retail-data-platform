@@ -33,3 +33,7 @@ On kaggle.com open Settings → API and create a token. Put the values in `.env`
 KAGGLE_USERNAME=<your username>
 KAGGLE_KEY=<your key>
 ```
+
+## 6. Port conflicts
+
+If port 5432 is already taken, change `POSTGRES_PORT` and `POSTGRES_DSN` in `.env`.

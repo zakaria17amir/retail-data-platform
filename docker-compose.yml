@@ -33,8 +33,8 @@ services:
 
   minio:
     profiles: [core]
-    # pgsty/minio: community fork; upstream minio/minio was removed from Docker Hub
-    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z # sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    # Silo (pgsty), maintained MinIO fork; minio/minio was removed from Docker Hub, see ADR-0002
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z # sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
