@@ -7,7 +7,11 @@ dependencies = [
   "pyspark==4.0.4",
   "delta-spark==4.0.1",
   "deltalake",
+  "pyarrow",
 ]
+
+[project.scripts]
+bronze = "lakehouse_spark.cli:main"
 
 [build-system]
 requires = ["hatchling"]

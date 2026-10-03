@@ -5,7 +5,7 @@ description = "End-to-end retail data platform"
 requires-python = ">=3.12,<3.13"
 
 [dependency-groups]
-dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit", "fastavro"]
+dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit", "fastavro", "deltalake", "psycopg[binary]", "python-dotenv"]
 
 [tool.uv.workspace]
 members = ["ingestion/replayer", "ingestion/clickstream_sim", "lakehouse/spark"]
@@ -20,10 +20,14 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.mypy]
 strict = true
 
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 markers = [
   "integration: needs running Compose services",
   "spark: needs a SparkSession (run inside the spark container)",
   "ingest: needs the ingest profile and reseeds the database",
 ]
-testpaths = ["ingestion", "lakehouse"]
+testpaths = ["ingestion", "lakehouse", "tests"]

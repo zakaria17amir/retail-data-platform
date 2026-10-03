@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark download seed seed-sample sample status
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -39,7 +39,7 @@ sync:
 lint:
 	uv run ruff check .
 	uv run ruff format --check .
-	uv run mypy ingestion lakehouse
+	uv run mypy ingestion lakehouse tests
 
 test:
 	uv run pytest -m "not integration and not spark and not ingest"
@@ -64,3 +64,17 @@ sample:
 
 status:
 	uv run --package replayer replayer status
+	uv run --package lakehouse-spark bronze status
+
+replay:
+	uv run --package replayer replayer live $(REPLAY_ARGS)
+
+sim:
+	uv run --package clickstream-sim clickstream-sim run $(SIM_ARGS)
+
+test-ingest:
+	@echo "WARNING: reseeds $$POSTGRES_DB with the sample fixture and clears bronze; set ALLOW_RESEED=1 to proceed"
+	uv run pytest -m ingest tests/integration
+
+reset-bronze:
+	sh ingestion/reset-bronze.sh $(or $(SEED),seed)
