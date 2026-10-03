@@ -3,7 +3,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from conftest import REVIEW_MESSAGE
-from replayer.load import row_counts, seed
+from replayer.load import row_counts, seed, strip_bom
 from replayer.schema import TABLES
 
 EXPECTED = {
@@ -18,15 +18,15 @@ EXPECTED = {
     "order_reviews": 3,
 }
 
-pytestmark = pytest.mark.integration
 
-
+@pytest.mark.integration
 def test_seed_loads_counts(dsn: str, tmp_csv_dir: Path) -> None:
     assert seed(dsn, tmp_csv_dir) == EXPECTED
     assert row_counts(dsn) == EXPECTED
     assert list(EXPECTED) == [t.name for t in TABLES]
 
 
+@pytest.mark.integration
 def test_copy_handles_quoted_newlines(
     dsn: str, conn: psycopg.Connection, tmp_csv_dir: Path
 ) -> None:
@@ -38,6 +38,7 @@ def test_copy_handles_quoted_newlines(
     assert row[0] == REVIEW_MESSAGE
 
 
+@pytest.mark.integration
 def test_duplicate_review_ids_load(dsn: str, conn: psycopg.Connection, tmp_csv_dir: Path) -> None:
     seed(dsn, tmp_csv_dir)
     row = conn.execute("select count(*) from olist.order_reviews where review_id = 'r2'").fetchone()
@@ -45,11 +46,13 @@ def test_duplicate_review_ids_load(dsn: str, conn: psycopg.Connection, tmp_csv_d
     assert row_counts(dsn)["order_reviews"] == 3
 
 
+@pytest.mark.integration
 def test_seed_is_idempotent(dsn: str, tmp_csv_dir: Path) -> None:
     first = seed(dsn, tmp_csv_dir)
     assert seed(dsn, tmp_csv_dir) == first
 
 
+@pytest.mark.integration
 def test_copy_rejects_mismatched_header(dsn: str, tmp_csv_dir: Path) -> None:
     before = seed(dsn, tmp_csv_dir)
     path = tmp_csv_dir / "olist_customers_dataset.csv"
@@ -62,6 +65,7 @@ def test_copy_rejects_mismatched_header(dsn: str, tmp_csv_dir: Path) -> None:
     assert row_counts(dsn) == before
 
 
+@pytest.mark.integration
 def test_updated_at_trigger_fires(dsn: str, conn: psycopg.Connection, tmp_csv_dir: Path) -> None:
     seed(dsn, tmp_csv_dir)
     query = "select updated_at from olist.customers where customer_id = 'c1'"
@@ -71,3 +75,11 @@ def test_updated_at_trigger_fires(dsn: str, conn: psycopg.Connection, tmp_csv_di
     assert before is not None
     assert after is not None
     assert after[0] > before[0]
+
+
+@pytest.mark.parametrize(
+    ("chunk", "expected"),
+    [(b"\xef\xbb\xbfa,b", b"a,b"), (b"a,b", b"a,b"), (b"", b"")],
+)
+def test_strip_bom(chunk: bytes, expected: bytes) -> None:
+    assert strip_bom(chunk) == expected

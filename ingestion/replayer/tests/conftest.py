@@ -1,11 +1,14 @@
 import csv
 import os
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import psycopg
 import pytest
 from dotenv import find_dotenv, load_dotenv
+from psycopg import sql
+from psycopg.conninfo import make_conninfo
 
 load_dotenv(find_dotenv(usecwd=True))
 
@@ -136,16 +139,22 @@ FIXTURE: dict[str, tuple[list[str], list[list[object]]]] = {
 }
 
 
-@pytest.fixture
-def dsn() -> str:
-    value = os.environ.get("POSTGRES_DSN")
-    if not value:
+@pytest.fixture(scope="session")
+def dsn() -> Iterator[str]:
+    base = os.environ.get("POSTGRES_DSN")
+    if not base:
         pytest.skip("POSTGRES_DSN is not set")
     try:
-        psycopg.connect(value, connect_timeout=3).close()
+        admin = psycopg.connect(base, autocommit=True, connect_timeout=3)
     except psycopg.OperationalError:
         pytest.skip("Postgres is unreachable")
-    return value
+    name = f"retail_test_{uuid.uuid4().hex[:8]}"
+    with admin:
+        admin.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        try:
+            yield make_conninfo(base, dbname=name)
+        finally:
+            admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
 
 
 @pytest.fixture

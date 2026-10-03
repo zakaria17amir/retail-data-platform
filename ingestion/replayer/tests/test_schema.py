@@ -1,5 +1,8 @@
+import os
+
 import psycopg
 import pytest
+from psycopg.conninfo import conninfo_to_dict
 from replayer.cli import main
 from replayer.schema import TABLES, apply_schema
 
@@ -45,3 +48,10 @@ def test_connection_error_hides_password(
     err = capsys.readouterr().err
     assert "secret" not in err
     assert "error: could not connect to nohost:1/db" in err
+
+
+@pytest.mark.integration
+def test_integration_uses_throwaway_database(dsn: str) -> None:
+    name = str(conninfo_to_dict(dsn)["dbname"])
+    assert name.startswith("retail_test_")
+    assert name != conninfo_to_dict(os.environ["POSTGRES_DSN"])["dbname"]

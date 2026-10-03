@@ -11,7 +11,7 @@ from replayer.download import MissingCredentials, csv_row_counts, download
 from replayer.load import row_counts, seed
 from replayer.sample import sample
 
-DEFAULT_DSN = "postgresql://retail:retail@localhost:5432/retail"
+DEFAULT_DSN = "postgresql://retail:retail@127.0.0.1:5432/retail"
 MISSING_CREDENTIALS_MESSAGE = (
     "error: set KAGGLE_USERNAME and KAGGLE_KEY in .env (see docs/runbooks/windows-setup.md)"
 )
@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
         info = conninfo_to_dict(os.environ.get("POSTGRES_DSN", DEFAULT_DSN))
         target = f"{info.get('host')}:{info.get('port')}/{info.get('dbname')}"
         print(f"error: could not connect to {target}", file=sys.stderr)
+        return 1
+    except psycopg.ProgrammingError:
+        print("error: invalid POSTGRES_DSN", file=sys.stderr)
         return 1
     except (FileNotFoundError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
