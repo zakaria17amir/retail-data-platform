@@ -11,7 +11,7 @@ PROFILE ?= core
 
 .PHONY: up down destroy ps logs sync lint test test-integration test-spark download seed seed-sample sample status
 
-# --wait treats exited one-shot *-init containers as failures, so wait on the long-running ones only
+# --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
 	docker compose --profile $(PROFILE) up -d
 	docker compose --profile $(PROFILE) up -d --wait $$(docker compose --profile $(PROFILE) config --services | grep -v -e '-init$$')
