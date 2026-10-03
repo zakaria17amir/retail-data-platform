@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+AGENTS.local.md
+.devin/config.local.json
+
+# Docker / data volumes
+.data/
+volumes/
+*.duckdb
+*.duckdb.wal
+
+# dbt
+analytics/target/
+analytics/dbt_packages/
+analytics/logs/
+
+# Airflow
+orchestration/logs/
+orchestration/airflow.db
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Terraform (.terraform.lock.hcl stays tracked)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.example.tfvars
+
+# Power BI temp
+*.pbix.bak
+~$*.pbix
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Kaggle raw data
+data/raw/
