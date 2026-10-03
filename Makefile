@@ -13,10 +13,10 @@ PROFILE ?= core
 
 # --wait treats exited one-shot *-init containers as failures, so wait on the long-running ones only
 up:
-	docker compose --profile core --profile $(PROFILE) up -d
-	docker compose --profile core --profile $(PROFILE) up -d --wait $$(docker compose --profile core --profile $(PROFILE) config --services | grep -v -e '-init$$')
-	@docker compose --profile core --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q '^minio-init exited 0$$' \
-		|| { echo "minio-init failed"; docker compose --profile core --profile $(PROFILE) logs minio-init; exit 1; }
+	docker compose --profile $(PROFILE) up -d
+	docker compose --profile $(PROFILE) up -d --wait $$(docker compose --profile $(PROFILE) config --services | grep -v -e '-init$$')
+	@docker compose --profile $(PROFILE) ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}' | grep -q '^minio-init exited 0$$' \
+		|| { echo "minio-init failed"; docker compose --profile $(PROFILE) logs minio-init; exit 1; }
 
 down:
 	docker compose --profile '*' down
@@ -45,7 +45,7 @@ test-integration:
 	uv run pytest -m integration
 
 test-spark:
-	docker compose --profile core --profile ingest run --rm --no-deps spark pytest /opt/lakehouse/tests -m spark
+	docker compose --profile ingest run --rm --no-deps spark pytest -p no:cacheprovider /opt/lakehouse/tests -m spark
 
 download:
 	uv run --package replayer replayer download --dest $(OLIST_DATA_DIR)

@@ -30,10 +30,10 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 -C - -o "$SPARK_HOME
 RUN pip install --no-cache-dir "pyspark==${SPARK_VERSION}" "delta-spark==${DELTA_VERSION}" pytest fastavro
 
 COPY spark-defaults.conf /opt/spark-defaults.conf.template
-COPY entrypoint.sh /opt/entrypoint.sh
-RUN chmod +x /opt/entrypoint.sh && mkdir -p "$SPARK_HOME/conf" && chown -R spark:spark "$SPARK_HOME/conf"
+COPY entrypoint.sh /opt/lakehouse-entrypoint.sh
+RUN chmod +x /opt/lakehouse-entrypoint.sh && mkdir -p "$SPARK_HOME/conf" && chown -R spark:spark "$SPARK_HOME/conf"
 
 RUN ln -s /usr/bin/python3 /usr/local/bin/python
 USER spark
 WORKDIR /opt/lakehouse
-ENTRYPOINT ["/opt/entrypoint.sh"]
+ENTRYPOINT ["/opt/lakehouse-entrypoint.sh"]

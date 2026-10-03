@@ -8,8 +8,7 @@ requires-python = ">=3.12,<3.13"
 dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit"]
 
 [tool.uv.workspace]
-members = ["ingestion/*"]
-exclude = ["ingestion/debezium"]
+members = ["ingestion/replayer"]
 
 [tool.ruff]
 line-length = 100
