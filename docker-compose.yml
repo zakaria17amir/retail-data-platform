@@ -2,7 +2,7 @@ name: retail
 
 services:
   postgres:
-    profiles: [core, ingest]
+    profiles: [core, ingest, demo]
     image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
@@ -192,6 +192,31 @@ services:
       resources:
         limits:
           memory: 3g
+    networks: [retail]
+
+  replayer:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: ingestion/replayer/Dockerfile
+    command: ["live", "--loop"]
+    environment:
+      OLIST_DATA_DIR: /data/olist
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REPLAY_SPEED: ${REPLAY_SPEED:-3600}
+    volumes:
+      - type: bind
+        source: ${OLIST_DATA_DIR}
+        target: /data/olist
+        read_only: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 768m
     networks: [retail]
 
 configs:

@@ -95,7 +95,7 @@ FIXTURE: dict[str, tuple[list[str], list[list[object]]]] = {
         [
             ["r1", "o1", 5, "", REVIEW_MESSAGE, "2017-01-06 00:00:00", "2017-01-07 10:00:00"],
             ["r2", "o2", 1, "ruim", "", "2017-02-16 00:00:00", "2017-02-17 10:00:00"],
-            ["r2", "o2", 2, "", "", "2017-02-18 00:00:00", "2017-02-19 10:00:00"],
+            ["r2", "o1", 2, "", "", "2017-02-18 00:00:00", "2017-02-19 10:00:00"],
         ],
     ),
     "olist_products_dataset.csv": (
@@ -163,11 +163,61 @@ def conn(dsn: str) -> Iterator[psycopg.Connection]:
         yield connection
 
 
-@pytest.fixture
-def tmp_csv_dir(tmp_path: Path) -> Path:
+TIMELINE_EXTRA: dict[str, list[list[object]]] = {
+    "olist_customers_dataset.csv": [
+        ["c3", "u3", 13023, "campinas", "SP"],
+        ["c4", "u4", 1310, "sao paulo", "SP"],
+    ],
+    "olist_orders_dataset.csv": [
+        [
+            "o3",
+            "c3",
+            "delivered",
+            "2017-03-01 09:00:00",
+            "",
+            "2017-03-02 10:00:00",
+            "2017-03-05 12:00:00",
+            "2017-03-10 00:00:00",
+        ],
+        [
+            "o4",
+            "c4",
+            "canceled",
+            "2017-04-01 08:00:00",
+            "2017-04-01 08:30:00",
+            "",
+            "",
+            "2017-04-15 00:00:00",
+        ],
+    ],
+    "olist_order_items_dataset.csv": [
+        ["o3", 1, "p1", "s1", "2017-03-03 09:00:00", "12.50", "3.00"],
+        ["o4", 1, "p2", "s1", "2017-04-03 08:00:00", "7.00", "2.00"],
+    ],
+    "olist_order_payments_dataset.csv": [
+        ["o3", 1, "credit_card", 1, "15.50"],
+        ["o4", 1, "boleto", 1, "9.00"],
+    ],
+    "olist_order_reviews_dataset.csv": [
+        ["r3", "o3", 4, "", "ok", "2017-03-06 00:00:00", "2017-03-07 10:00:00"],
+    ],
+}
+
+
+def _write_csvs(directory: Path, extra: dict[str, list[list[object]]]) -> Path:
     for filename, (header, rows) in FIXTURE.items():
-        with (tmp_path / filename).open("w", encoding="utf-8", newline="") as handle:
+        with (directory / filename).open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(header)
-            writer.writerows(rows)
-    return tmp_path
+            writer.writerows([*rows, *extra.get(filename, [])])
+    return directory
+
+
+@pytest.fixture
+def tmp_data_dir(tmp_path: Path) -> Path:
+    return _write_csvs(tmp_path, TIMELINE_EXTRA)
+
+
+@pytest.fixture
+def tmp_csv_dir(tmp_path: Path) -> Path:
+    return _write_csvs(tmp_path, {})

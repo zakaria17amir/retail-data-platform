@@ -1,6 +1,8 @@
 import argparse
+import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import psycopg
@@ -8,6 +10,7 @@ from dotenv import find_dotenv, load_dotenv
 from psycopg.conninfo import conninfo_to_dict
 
 from replayer.download import MissingCredentials, csv_row_counts, download
+from replayer.live import run_live
 from replayer.load import row_counts, seed
 from replayer.sample import sample
 
@@ -36,6 +39,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sample_parser.add_argument("--dest", type=Path, required=True)
     sample_parser.add_argument("--n-orders", type=int, required=True)
     sample_parser.add_argument("--seed", type=int, default=42)
+    live_parser = commands.add_parser(
+        "live", help="replay Olist history into Postgres in real time"
+    )
+    live_parser.add_argument("--data-dir", type=Path, default=default_dir)
+    live_parser.add_argument("--from", dest="start", type=datetime.fromisoformat)
+    live_parser.add_argument("--until", type=datetime.fromisoformat)
+    live_parser.add_argument(
+        "--speed", type=float, default=float(os.environ.get("REPLAY_SPEED", "3600"))
+    )
+    live_parser.add_argument("--loop", action="store_true")
+    live_parser.add_argument("--summary-file", type=Path)
     return parser
 
 
@@ -47,6 +61,18 @@ def _run(args: argparse.Namespace) -> dict[str, int]:
     dsn = os.environ.get("POSTGRES_DSN", DEFAULT_DSN)
     if args.command == "seed":
         return seed(dsn, args.data_dir)
+    if args.command == "live":
+        counts = run_live(
+            dsn,
+            args.data_dir,
+            start=args.start,
+            until=args.until,
+            speed=args.speed,
+            loop=args.loop,
+        )
+        if args.summary_file:
+            args.summary_file.write_text(json.dumps(counts), encoding="utf-8")
+        return counts
     return row_counts(dsn)
 
 
