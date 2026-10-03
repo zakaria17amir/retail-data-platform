@@ -25,17 +25,25 @@ if curl -fs "$CONNECT_URL/connectors/$CONNECTOR" >/dev/null; then
     sleep 1
   done
   curl -fs -X DELETE "$CONNECT_URL/connectors/$CONNECTOR/offsets" >/dev/null
+else
+  echo "warning: connector $CONNECTOR not found at $CONNECT_URL; stored offsets may survive and skip the snapshot" >&2
 fi
 
 echo "[3/8] dropping replication slot olist_debezium"
+dropped=0
 for _ in $(seq 1 30); do
   if $COMPOSE exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc \
     "select pg_drop_replication_slot(slot_name) from pg_replication_slots where slot_name = 'olist_debezium'" \
     >/dev/null 2>&1; then
+    dropped=1
     break
   fi
   sleep 1
 done
+if [ "$dropped" -ne 1 ]; then
+  echo "could not drop replication slot olist_debezium after 30 tries (still active?)" >&2
+  exit 1
+fi
 
 echo "[4/8] deleting topics cdc.olist.* and events.*, consumer group clickstream-sim"
 $COMPOSE exec -T redpanda rpk topic delete -r '^cdc\.olist\..*' '^events\..*' >/dev/null 2>&1 || true

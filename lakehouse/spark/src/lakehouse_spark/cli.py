@@ -44,6 +44,15 @@ def _open(path: str, options: dict[str, str] | None) -> Any:
         return None
 
 
+def _row_count(table: Any) -> int:
+    import pyarrow as pa
+
+    records = pa.table(table.get_add_actions(flatten=True)).column("num_records").to_pylist()
+    if None in records:
+        return int(table.to_pyarrow_dataset().count_rows())
+    return int(sum(records))
+
+
 def status_counts(root: str, env: Mapping[str, str]) -> dict[str, Any]:
     options = storage_options(root, env)
     paths = {f"bronze/olist/{t}": f"{root}/bronze/olist/{t}" for t in OLIST_TABLES}
@@ -52,7 +61,7 @@ def status_counts(root: str, env: Mapping[str, str]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name, path in paths.items():
         table = _open(path, options)
-        result[name] = 0 if table is None else table.to_pyarrow_dataset().count_rows()
+        result[name] = 0 if table is None else _row_count(table)
         if name.startswith("quarantine/") and result[name]:
             reasons = table.to_pyarrow_table(columns=["reason"]).column("reason").to_pylist()
             result[f"{name} reasons"] = dict(sorted(Counter(reasons).items()))

@@ -113,7 +113,14 @@ def run(
     tie_breaker = itertools.count()
     unflushed = 0
     generated = 0
-    counts = {"produced": 0, "duplicates": 0, "bad": 0, "late": 0, "schema_v2": 0}
+    counts = {
+        "produced": 0,
+        "duplicates": 0,
+        "null_id_duplicates": 0,
+        "bad": 0,
+        "late": 0,
+        "schema_v2": 0,
+    }
     try:
         while not stop.is_set():
             generating = max_events is None or generated < max_events
@@ -150,6 +157,7 @@ def run(
                 counts["produced"] += 1
                 if emission.is_duplicate:
                     counts["duplicates"] += 1
+                    counts["null_id_duplicates"] += emission.event.event_id is None
                     continue
                 counts["bad"] += bad
                 counts["late"] += emission.delay_s >= LATE_THRESHOLD_S
@@ -164,6 +172,7 @@ def run(
     summary = {
         "events_unique": counts["produced"] - counts["duplicates"],
         "duplicates": counts["duplicates"],
+        "null_id_duplicates": counts["null_id_duplicates"],
         "bad": counts["bad"],
         "late": counts["late"],
         "produced": counts["produced"],

@@ -127,6 +127,13 @@ def test_summary_adds_up() -> None:
     assert summary["schema_v2"] == 0
 
 
+def test_null_id_duplicates_are_counted() -> None:
+    summary, producer = _run(_cfg(bad_rate=1.0, dup_rate=1.0), max_events=60)
+    expected = sum(1 for _, e, _ in producer.sent if e.is_duplicate and e.event.event_id is None)
+    assert expected >= 1
+    assert summary["null_id_duplicates"] == expected
+
+
 def test_emissions_are_produced_in_due_order() -> None:
     _, producer = _run(_cfg(), max_events=60)
     times = [t for t, _, _ in producer.sent]

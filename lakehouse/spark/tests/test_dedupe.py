@@ -1,8 +1,10 @@
 import json
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from lakehouse_spark.bronze.app import log_watermark_drops
 from lakehouse_spark.bronze.decode import dedupe_stream, with_dedupe_key
 from pyspark.sql import DataFrame, Row, SparkSession
 
@@ -66,9 +68,9 @@ def test_dedupe_stream_drops_duplicates_within_watermark(
         query.processAllAvailable()
         assert [(r.key, r.timestamp) for r in survivors] == [("A", T0)]
 
-        _write(source, "2.json", [("B", T0 + timedelta(days=5))])
+        _write(source, "2.json", [("B", T0 + timedelta(days=7))])
         query.processAllAvailable()
-        _write(source, "3.json", [("A", T0 + timedelta(days=5, hours=1))])
+        _write(source, "3.json", [("A", T0 + timedelta(days=7, hours=1))])
         query.processAllAvailable()
         query.processAllAvailable()
     finally:
@@ -76,4 +78,50 @@ def test_dedupe_stream_drops_duplicates_within_watermark(
 
     assert sorted(r.key for r in survivors) == ["A", "A", "B"]
     latest_a = max(r.timestamp for r in survivors if r.key == "A")
-    assert latest_a == T0 + timedelta(days=5, hours=1)
+    assert latest_a == T0 + timedelta(days=7, hours=1)
+
+
+def test_late_events_survive_and_drops_are_logged(
+    spark: SparkSession, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    source = tmp_path / "in"
+    source.mkdir()
+    survivors: list[Row] = []
+
+    def collect(batch: DataFrame, batch_id: int) -> None:
+        survivors.extend(batch.collect())
+
+    stream = (
+        spark.readStream.schema(
+            "key string, timestamp timestamp, topic string, partition int, offset long"
+        )
+        .option("maxFilesPerTrigger", 1)
+        .json(str(source))
+    )
+    query = (
+        dedupe_stream(with_dedupe_key(stream))
+        .writeStream.queryName("events_to_bronze")
+        .foreachBatch(collect)
+        .option("checkpointLocation", str(tmp_path / "ckpt"))
+        .start()
+    )
+    newest = T0 + timedelta(hours=80)
+    try:
+        _write(source, "1.json", [("NEW", newest)])
+        query.processAllAvailable()
+        _write(
+            source,
+            "2.json",
+            [("L47", newest - timedelta(hours=47)), ("L50", newest - timedelta(hours=50))],
+        )
+        query.processAllAvailable()
+        _write(source, "3.json", [("L80", newest - timedelta(hours=80))])
+        query.processAllAvailable()
+        progress = [p.json for p in query.recentProgress]
+    finally:
+        query.stop()
+
+    assert sorted(r.key for r in survivors) == ["L47", "L50", "NEW"]
+    with caplog.at_level(logging.WARNING, logger="bronze"):
+        assert sum(log_watermark_drops(p) for p in progress) == 1
+    assert "events_to_bronze dropped 1 rows behind the watermark" in caplog.text

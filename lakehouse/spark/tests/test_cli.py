@@ -33,6 +33,15 @@ def test_status_json_lists_tables_and_zero_for_missing(
     assert not any("reasons" in key for key in counts)
 
 
+def test_status_sums_records_across_add_actions(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bronze" / "olist" / "orders"
+    _write(path, order_id=["a", "b", "c"])
+    write_deltalake(str(path), pa.table({"order_id": ["d"]}), mode="append")
+    assert json.loads(_status(tmp_path, capsys, "--json"))["bronze/olist/orders"] == 4
+
+
 def test_status_text_is_sorted_one_per_line(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

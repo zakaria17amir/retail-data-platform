@@ -18,7 +18,8 @@ QUARANTINE_REASONS = (
 
 EVENT_TS_FORMAT = "yyyy-MM-dd'T'HH:mm:ss"
 MIN_EVENT_YEAR = 2016
-DEDUPE_WATERMARK = "48 hours"
+# SIM_LATE_MAX_HOURS (48 h) + session/browsing offsets (<= ~2 h) + margin; later rows are dropped
+DEDUPE_WATERMARK = "72 hours"
 
 KAFKA_COLUMNS = ["kafka_topic", "kafka_partition", "kafka_offset", "kafka_timestamp", "schema_id"]
 INGEST_COLUMNS = ["ingest_ts", "ingest_date"]

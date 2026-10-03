@@ -5,11 +5,19 @@ checkpoints (_checkpoints/bronze/*) therefore requires clearing bronze/ as well,
 new BRONZE_RUN_ID so the transaction namespace is fresh.
 """
 
+import json
+import logging
 import os
 from functools import reduce
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.streaming.listener import (
+    QueryProgressEvent,
+    QueryStartedEvent,
+    QueryTerminatedEvent,
+    StreamingQueryListener,
+)
 from pyspark.sql.streaming.query import StreamingQuery
 
 from lakehouse_spark.bronze.decode import decode_batch, dedupe_stream, with_dedupe_key
@@ -18,6 +26,28 @@ from lakehouse_spark.registry import SchemaRegistry, SchemaSource
 
 METADATA_REFRESH_MS = "30000"
 RUN_ID = os.environ.get("BRONZE_RUN_ID", "")
+log = logging.getLogger("bronze")
+
+
+def log_watermark_drops(progress_json: str) -> int:
+    progress = json.loads(progress_json)
+    dropped = sum(
+        int(op.get("numRowsDroppedByWatermark", 0)) for op in progress.get("stateOperators", [])
+    )
+    if dropped:
+        log.warning("%s dropped %d rows behind the watermark", progress.get("name"), dropped)
+    return dropped
+
+
+class WatermarkDropLogger(StreamingQueryListener):
+    def onQueryStarted(self, event: QueryStartedEvent) -> None:
+        pass
+
+    def onQueryProgress(self, event: QueryProgressEvent) -> None:
+        log_watermark_drops(event.progress.json)
+
+    def onQueryTerminated(self, event: QueryTerminatedEvent) -> None:
+        pass
 
 
 def build_session(app_name: str = "bronze") -> SparkSession:
@@ -98,7 +128,11 @@ def main() -> None:
     root = f"s3a://{os.environ['LAKEHOUSE_BUCKET']}"
     bootstrap = os.environ["KAFKA_BOOTSTRAP"]
     registry = SchemaRegistry(os.environ["SCHEMA_REGISTRY_URL"])
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     spark = build_session()
+    spark.streams.addListener(WatermarkDropLogger())
     for name, pattern, source, dedupe in (
         ("cdc_to_bronze", r"cdc\.olist\..*", "olist", False),
         ("events_to_bronze", r"events\..*", "events", True),

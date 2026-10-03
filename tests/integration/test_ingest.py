@@ -18,6 +18,7 @@ from urllib.request import urlopen
 
 import pytest
 from deltalake import DeltaTable
+from deltalake.exceptions import DeltaError
 from dotenv import find_dotenv, load_dotenv
 from lakehouse_spark.cli import status_counts, storage_options
 from replayer.schema import TABLES
@@ -63,8 +64,15 @@ def _status() -> dict[str, Any]:
 
 def _wait_until(what: str, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
     deadline = time.monotonic() + POLL_TIMEOUT_S
-    status = _status()
-    while not predicate(status):
+    last = "no bronze status yet"
+    while True:
+        try:
+            status = _status()
+            if predicate(status):
+                return status
+            last = json.dumps(status, indent=1)
+        except (DeltaError, OSError) as error:
+            last = f"bronze status failed: {error!r}"
         if time.monotonic() > deadline:
             logs = subprocess.run(  # noqa: S603
                 ["docker", "compose", "--profile", "ingest", "logs", "--tail", "50", "spark"],
@@ -72,13 +80,8 @@ def _wait_until(what: str, predicate: Callable[[dict[str, Any]], bool]) -> dict[
                 capture_output=True,
                 text=True,
             )
-            pytest.fail(
-                f"timed out waiting for {what}\n{json.dumps(status, indent=1)}\n"
-                f"--- spark logs ---\n{logs.stdout}"
-            )
+            pytest.fail(f"timed out waiting for {what}\n{last}\n--- spark logs ---\n{logs.stdout}")
         time.sleep(POLL_INTERVAL_S)
-        status = _status()
-    return status
 
 
 def _csv_rows(name: str) -> list[dict[str, str]]:
@@ -119,6 +122,7 @@ def test_ingest_end_to_end(tmp_path: Path) -> None:
     start = purchases[0].replace(" ", "T")
     until = (datetime.fromisoformat(purchases[-1]) + timedelta(seconds=1)).isoformat()
     sim_summary = tmp_path / "sim.json"
+    sim_log = tmp_path / "sim.log"
     replay_summary = tmp_path / "replay.json"
     sim_env = {
         **os.environ,
@@ -128,17 +132,17 @@ def test_ingest_end_to_end(tmp_path: Path) -> None:
         "SIM_SCHEMA_EVOLVE_AFTER": "100",
         "REPLAY_SPEED": "1e6",
     }
-    sim = subprocess.Popen(  # noqa: S603
-        [
-            "uv", "run", "--package", "clickstream-sim", "clickstream-sim", "run",
-            "--max-events", "300", "--summary-file", str(sim_summary),
-        ],
-        cwd=ROOT,
-        env=sim_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )  # fmt: skip
+    with sim_log.open("w", encoding="utf-8") as sim_out:
+        sim = subprocess.Popen(  # noqa: S603
+            [
+                "uv", "run", "--package", "clickstream-sim", "clickstream-sim", "run",
+                "--max-events", "300", "--summary-file", str(sim_summary),
+            ],
+            cwd=ROOT,
+            env=sim_env,
+            stdout=sim_out,
+            stderr=subprocess.STDOUT,
+        )  # fmt: skip
     try:
         _wait_for_consumer_group("clickstream-sim")
         _run(
@@ -152,37 +156,50 @@ def test_ingest_end_to_end(tmp_path: Path) -> None:
         live: dict[str, int] = json.loads(replay_summary.read_text())
         assert live, "replayer applied no changes"
         expected = {k: v + live.get(k.rsplit("/", 1)[-1], 0) for k, v in snapshot.items()}
-        status = _wait_until(
-            "live changes to reach bronze", lambda s: all(s[k] == v for k, v in expected.items())
-        )
+
+        def cdc_matches(s: dict[str, Any]) -> bool:
+            return all(s[k] == v for k, v in expected.items())
+
+        _wait_until("live changes to reach bronze", cdc_matches)
+        time.sleep(POLL_INTERVAL_S * 2)
+        status = _status()
+        assert cdc_matches(status), status
         assert status["quarantine/olist"] == 0
 
-        output, _ = sim.communicate(timeout=POLL_TIMEOUT_S)
-        assert sim.returncode == 0, output
+        sim.wait(timeout=POLL_TIMEOUT_S)
+        assert sim.returncode == 0, sim_log.read_text(encoding="utf-8")
     finally:
         if sim.poll() is None:
             sim.kill()
 
     summary: dict[str, int] = json.loads(sim_summary.read_text())
-    unique, duplicates = summary["events_unique"], summary["duplicates"]
+    unique = summary["events_unique"]
     assert unique == 300
-    status = _wait_until("events to reach bronze", lambda s: _events_total(s) >= unique)
+    # duplicates of events without an event_id cannot be deduplicated: each copy is quarantined
+    expected_events = unique + summary["null_id_duplicates"]
+    status = _wait_until("events to reach bronze", lambda s: _events_total(s) >= expected_events)
     time.sleep(POLL_INTERVAL_S * 2)
     status = _status()
-    # only duplicates of events without an event_id (undeduplicable, all quarantined) can add rows
-    assert unique <= _events_total(status) <= unique + duplicates, status
+    assert _events_total(status) == expected_events, status
 
     reasons = status["quarantine/events reasons"]
     assert {"null_primary_key", "unparseable_timestamp"} <= set(reasons)
 
     options = storage_options(f"s3://{BUCKET}", os.environ)
-    columns = {
-        name
+    tables = [
+        DeltaTable(f"s3://{BUCKET}/bronze/events/{event_type}", storage_options=options)
         for event_type in EVENT_TYPES
         if status[f"bronze/events/{event_type}"]
-        for name in DeltaTable(f"s3://{BUCKET}/bronze/events/{event_type}", storage_options=options)
-        .schema()
-        .to_arrow()
-        .names
-    }
+    ]
+    event_ids = [
+        event_id
+        for table in tables
+        for event_id in table.to_pyarrow_table(columns=["event_id"]).column("event_id").to_pylist()
+    ]
+    assert (
+        len(event_ids)
+        == len(set(event_ids))
+        == sum(status[f"bronze/events/{t}"] for t in EVENT_TYPES)
+    )
+    columns = {name for table in tables for name in table.schema().to_arrow().names}
     assert "utm_campaign" in columns
