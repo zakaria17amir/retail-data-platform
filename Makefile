@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load ollama-models enrich rag agents-eval
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load ollama-models enrich rag agents-eval shop-init
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -138,3 +138,7 @@ rag:
 
 agents-eval:
 	uv run --project agents agents eval $(ARGS)
+
+# sql/shop.sql: shop.stock + the INSERT-only shop_writer role used by the chainlit SHOP_DSN
+shop-init:
+	uv run --project agents agents shop init

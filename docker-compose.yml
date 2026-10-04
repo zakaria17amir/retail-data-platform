@@ -784,8 +784,13 @@ services:
       SHOP_DSN: postgresql://shop_writer:shop_writer@postgres:5432/${POSTGRES_DB}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       RECOMMEND_URL: http://serving:8000
-      KAFKA_BOOTSTRAP: redpanda:9092
-      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      # product titles from Delta silver/product_enriched (falls back to category names if absent)
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      # default "Customer id" chat setting of the Shopping profile (a real Olist customer in gold)
+      DEMO_CUSTOMER_ID: ${DEMO_CUSTOMER_ID:-3ce436f183e68e07877b285a838db11a}
       GOLD_DIR: /app/data/gold
     ports:
       - "127.0.0.1:8010:8010"
