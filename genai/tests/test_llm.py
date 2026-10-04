@@ -17,6 +17,11 @@ def test_config_from_env() -> None:
     assert LLMConfig.from_env({"MLFLOW_TRACKING_URI": "http://mlflow:5000"}).trace is True
 
 
+def test_hosted_provider_selects_the_hosted_chat_alias() -> None:
+    assert LLMConfig.from_env({"LLM_PROVIDER": "hosted"}).model == "chat-hosted"
+    assert LLMConfig.from_env({"LLM_PROVIDER": "local"}).model == "chat"
+
+
 def test_complete_json_calls_the_proxy_alias_with_a_json_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,4 +1,7 @@
+import hashlib
 import json
+import math
+import random
 from collections.abc import Sequence
 from typing import Any
 
@@ -41,6 +44,23 @@ def context(product_id: str = "p1", category: str = "bed_bath_table") -> Product
         photos=2,
         reviews=("Muito bom",),
     )
+
+
+def fake_vector(text: str, dim: int = 1024) -> list[float]:
+    """Deterministic unit vector: same text, same vector; unrelated texts are near-orthogonal."""
+    rng = random.Random(int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big"))
+    values = [rng.gauss(0.0, 1.0) for _ in range(dim)]
+    norm = math.sqrt(sum(v * v for v in values))
+    return [v / norm for v in values]
+
+
+class FakeEmbedder:
+    def __init__(self) -> None:
+        self.batches: list[list[str]] = []
+
+    def __call__(self, texts: list[str]) -> list[list[float]]:
+        self.batches.append(list(texts))
+        return [fake_vector(t) for t in texts]
 
 
 @pytest.fixture(autouse=True)

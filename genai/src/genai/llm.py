@@ -29,6 +29,7 @@ class LLMConfig:
         return cls(
             base_url=env.get("LITELLM_URL") or cls.base_url,
             api_key=env.get("LITELLM_MASTER_KEY", ""),
+            model="chat-hosted" if env.get("LLM_PROVIDER") == "hosted" else cls.model,
             trace=bool(env.get("MLFLOW_TRACKING_URI")),
         )
 
