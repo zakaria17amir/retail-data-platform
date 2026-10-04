@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import urllib.request
 from datetime import UTC, datetime, timedelta
@@ -6,6 +7,8 @@ from typing import Any
 
 from airflow.sdk import DAG, task
 from common import START, default_args
+
+log = logging.getLogger(__name__)
 
 
 def unhealthy_connectors(status: dict[str, Any]) -> list[str]:
@@ -29,7 +32,7 @@ with DAG(
     start_date=START,
     catchup=False,
     max_active_runs=1,
-    default_args=default_args,
+    default_args={**default_args, "retries": 0},  # the next 15-min run is the retry
     tags=["ingest"],
 ):
 
@@ -61,7 +64,7 @@ with DAG(
         hours = float(os.environ.get("BRONZE_FRESHNESS_HOURS", "24"))
         if not bronze_is_fresh(latest, datetime.now(UTC), hours):
             raise RuntimeError(f"bronze/olist/orders latest ingest_ts {latest} older than {hours}h")
-        print(f"bronze/olist/orders latest ingest_ts {latest}")
+        log.info("bronze/olist/orders latest ingest_ts %s", latest)
 
     connectors_running()
     bronze_fresh()

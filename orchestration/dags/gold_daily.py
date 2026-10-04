@@ -7,7 +7,6 @@ from common import GOLD, SILVER, START, default_args
 from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import InvocationMode, LoadMode, SourceRenderingBehavior
 
-DBT = "/opt/dbt-venv/bin/dbt"
 PROJECT = Path(os.environ.get("DBT_PROJECT_DIR", "/opt/airflow/analytics"))
 
 with DAG(
@@ -20,18 +19,24 @@ with DAG(
     default_args=default_args,
     tags=["gold"],
 ):
+    # manifest and dbt_packages come from `make dbt-parse` / `make gold` on the host (analytics/ is
+    # mounted), so parsing this DAG never runs dbt
     dbt = DbtTaskGroup(
         group_id="dbt",
-        project_config=ProjectConfig(PROJECT, install_dbt_deps=True),
+        project_config=ProjectConfig(
+            PROJECT,
+            manifest_path=PROJECT / "target" / "manifest.json",
+            install_dbt_deps=False,
+        ),
         profile_config=ProfileConfig(
             profile_name="retail",
             target_name="local",
             profiles_yml_filepath=PROJECT / "profiles.yml",
         ),
-        execution_config=ExecutionConfig(dbt_executable_path=DBT),
+        execution_config=ExecutionConfig(dbt_executable_path="/opt/dbt-venv/bin/dbt"),
         render_config=RenderConfig(
-            # dbt lives only in the image's /opt/dbt-venv; CI parses the project without it
-            load_method=LoadMode.DBT_LS if os.access(DBT, os.X_OK) else LoadMode.CUSTOM,
+            load_method=LoadMode.DBT_MANIFEST,
+            # Cosmos' default DBT_RUNNER mode requires dbt inside Airflow's own environment
             invocation_mode=InvocationMode.SUBPROCESS,
             source_rendering_behavior=SourceRenderingBehavior.WITH_TESTS_OR_FRESHNESS,
             emit_datasets=False,

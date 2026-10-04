@@ -17,16 +17,24 @@ START = datetime(2026, 10, 1, tzinfo=UTC)
 
 
 def on_failure(context: Context) -> None:
-    ti = context["ti"]
-    payload = {"dag": ti.dag_id, "task": ti.task_id, "run_id": ti.run_id, "log_url": ti.log_url}
-    url = os.environ.get("ALERT_WEBHOOK_URL")
-    if not url:
-        log.error("task failed (ALERT_WEBHOOK_URL unset): %s", payload)
-        return
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
-    )
-    urllib.request.urlopen(req, timeout=10)
+    try:
+        ti = context["ti"]
+        base = os.environ.get("AIRFLOW__API__BASE_URL", "http://localhost:8080").rstrip("/")
+        log_url = getattr(ti, "log_url", None) or (
+            f"{base}/dags/{ti.dag_id}/runs/{ti.run_id}/tasks/{ti.task_id}"
+        )
+        payload = {"dag": ti.dag_id, "task": ti.task_id, "run_id": ti.run_id, "log_url": log_url}
+        url = os.environ.get("ALERT_WEBHOOK_URL")
+        if not url:
+            log.error("task failed (ALERT_WEBHOOK_URL unset): %s", json.dumps(payload))
+            return
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            log.info("failure alert sent: %s", json.dumps(payload))
+    except Exception:
+        log.exception("failure alert not sent")
 
 
 default_args: dict[str, Any] = {
@@ -51,7 +59,7 @@ def spark_task(task_id: str, script: str, args: list[str]) -> DockerOperator:
         mounts=[
             Mount(
                 target="/opt/lakehouse",
-                source=f"{os.environ.get('HOST_REPO_DIR', '')}/lakehouse/spark",
+                source=f"{os.environ['HOST_REPO_DIR']}/lakehouse/spark",
                 type="bind",
                 read_only=True,
             )

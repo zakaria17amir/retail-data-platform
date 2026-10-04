@@ -1,6 +1,9 @@
+import contextlib
 import json
+import logging
 import os
 import sys
+import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,12 +20,21 @@ from airflow.dag_processing.dagbag import DagBag  # noqa: E402
 from airflow.sdk import AssetAll  # noqa: E402
 
 DAG_IDS = {"ingest_health", "silver_hourly", "gold_daily", "lakehouse_maintenance"}
+TI = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
 
 
 @pytest.fixture(scope="module")
 def dagbag() -> DagBag:
     if not Path("/opt/airflow/analytics").exists():
         os.environ.setdefault("DBT_PROJECT_DIR", str(DAGS_DIR.parents[1] / "analytics"))
+    os.environ.setdefault("HOST_REPO_DIR", "/repo")
+    manifest = Path(os.environ.get("DBT_PROJECT_DIR", "/opt/airflow/analytics"))
+    manifest /= "target/manifest.json"
+    if not manifest.exists():
+        msg = f"{manifest} missing: run `make dbt-parse` first"
+        if os.environ.get("CI"):
+            pytest.fail(msg)
+        pytest.skip(msg)
     return DagBag(dag_folder=str(DAGS_DIR))
 
 
@@ -38,13 +50,23 @@ def test_every_task_has_owner_and_retries(dagbag: DagBag) -> None:
     for dag in dagbag.dags.values():
         for t in dag.tasks:
             assert t.owner == "data-platform", (dag.dag_id, t.task_id)
-            assert t.retries >= 1, (dag.dag_id, t.task_id)
+            if dag.dag_id == "ingest_health":
+                assert t.retries == 0, t.task_id
+            else:
+                assert t.retries >= 1, (dag.dag_id, t.task_id)
 
 
 def test_gold_daily_is_scheduled_on_silver(dagbag: DagBag) -> None:
     dag = dagbag.dags["gold_daily"]
     assert dag.timetable.asset_condition == AssetAll(common.SILVER)
     assert any(common.GOLD in t.outlets for t in dag.tasks)
+    assert dag.max_active_tasks == 1
+    assert dag.max_active_runs == 1
+
+
+def test_gold_daily_renders_models_and_source_checks(dagbag: DagBag) -> None:
+    ids = set(dagbag.dags["gold_daily"].task_ids)
+    assert {"dbt.stg_orders.run", "dbt.stg_orders.test", "dbt.silver_orders.source"} <= ids
 
 
 def test_silver_hourly_publishes_silver(dagbag: DagBag) -> None:
@@ -52,6 +74,9 @@ def test_silver_hourly_publishes_silver(dagbag: DagBag) -> None:
     quality = dag.get_task("quality")
     assert common.SILVER in quality.outlets
     assert quality.upstream_task_ids == {"silver"}
+    assert quality.bash_command == (
+        'python -m lakehouse_quality.run run --root "s3://${LAKEHOUSE_BUCKET:-lakehouse}"'
+    )
 
 
 def test_spark_task_runs_on_compose_network(dagbag: DagBag) -> None:
@@ -63,12 +88,22 @@ def test_spark_task_runs_on_compose_network(dagbag: DagBag) -> None:
     assert silver.mounts[0]["ReadOnly"] is True
 
 
+def test_spark_task_requires_host_repo_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HOST_REPO_DIR", raising=False)
+    with pytest.raises(KeyError, match="HOST_REPO_DIR"):
+        common.spark_task("x", "silver/job.py", [])
+
+
 def test_failure_callback_posts_json(monkeypatch: pytest.MonkeyPatch) -> None:
     sent: list[Any] = []
+
+    def urlopen(req: Any, timeout: float) -> contextlib.AbstractContextManager[None]:
+        sent.append(req)
+        return contextlib.nullcontext()
+
     monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://hook.test/x")
-    monkeypatch.setattr(common.urllib.request, "urlopen", lambda req, timeout: sent.append(req))
-    ti = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
-    common.on_failure({"ti": ti})  # type: ignore[arg-type]
+    monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
+    common.on_failure({"ti": TI})  # type: ignore[typeddict-item]
     (req,) = sent
     assert req.full_url == "http://hook.test/x"
     assert req.get_header("Content-type") == "application/json"
@@ -78,8 +113,34 @@ def test_failure_callback_posts_json(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_failure_callback_without_webhook_only_logs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ALERT_WEBHOOK_URL", raising=False)
     monkeypatch.setattr(common.urllib.request, "urlopen", pytest.fail)
-    ti = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
-    common.on_failure({"ti": ti})  # type: ignore[arg-type]
+    common.on_failure({"ti": TI})  # type: ignore[typeddict-item]
+
+
+def test_failure_callback_swallows_webhook_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def urlopen(req: Any, timeout: float) -> None:
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://hook.test/x")
+    monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
+    with caplog.at_level(logging.ERROR, logger=common.log.name):
+        common.on_failure({"ti": TI})  # type: ignore[typeddict-item]
+    assert "failure alert not sent" in caplog.text
+
+
+def test_failure_callback_log_url_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[Any] = []
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://hook.test/x")
+    monkeypatch.setenv("AIRFLOW__API__BASE_URL", "http://af:8080/")
+    monkeypatch.setattr(
+        common.urllib.request,
+        "urlopen",
+        lambda req, timeout: sent.append(req) or contextlib.nullcontext(),
+    )
+    ti = SimpleNamespace(dag_id="d", task_id="t", run_id="r")
+    common.on_failure({"ti": ti})  # type: ignore[typeddict-item]
+    assert json.loads(sent[0].data)["log_url"] == "http://af:8080/dags/d/runs/r/tasks/t"
 
 
 def test_unhealthy_connectors() -> None:
