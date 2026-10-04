@@ -35,7 +35,7 @@ metrics:
     label: Late-delivery rate
     description: >
       Delivered orders with order_delivered_customer_ts_utc > order_estimated_delivery_ts_utc /
-      delivered orders.
+      delivered orders (deleted orders excluded, as for revenue).
     type: ratio
     type_params:
       numerator: late_delivered_orders

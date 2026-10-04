@@ -52,9 +52,10 @@ select
     durations.approved_to_carrier_hours,
     durations.carrier_to_customer_hours,
     durations.purchase_to_customer_hours,
-    orders.order_status = 'delivered' as is_delivered,
+    coalesce(orders.order_status = 'delivered' and not orders._is_deleted, false) as is_delivered,
     coalesce(
         orders.order_status = 'delivered'
+        and not orders._is_deleted
         and orders.order_delivered_customer_ts_utc > orders.order_estimated_delivery_ts_utc,
         false
     ) as is_late,

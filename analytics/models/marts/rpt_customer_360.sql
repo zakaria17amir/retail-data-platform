@@ -20,25 +20,38 @@ customers as (
     from orders
     group by customer_unique_id
     having sum(case when is_revenue_order then 1 else 0 end) > 0
+),
+
+recency as (
+    select
+        customers.*,
+        {{ dbt.datediff('last_order_date', 'as_of_date', 'day') }}
+            as recency_days
+    from customers
+    cross join as_of
 )
 
+-- tie-safe scores: equal metric values always share a score (percent_rank buckets; frequency
+-- by fixed thresholds because most customers have exactly one order)
 select
-    customers.customer_unique_id,
-    customers.orders,
-    customers.first_order_ts_utc,
-    customers.last_order_ts_utc,
-    customers.frequency,
-    customers.monetary,
-    customers.monetary as ltv,
-    as_of.as_of_date - customers.last_order_date as recency_days,
-    ntile(5) over (
-        order by customers.last_order_date, customers.customer_unique_id
+    customer_unique_id,
+    orders,
+    first_order_ts_utc,
+    last_order_ts_utc,
+    recency_days,
+    frequency,
+    monetary,
+    monetary as ltv,
+    case
+        when frequency >= 4 then 5
+        when frequency = 3 then 4
+        when frequency = 2 then 3
+        else 1
+    end as frequency_score,
+    least(
+        5, 1 + cast(floor(5 * percent_rank() over (order by recency_days desc)) as integer)
     ) as recency_score,
-    ntile(5) over (
-        order by customers.frequency, customers.customer_unique_id
-    ) as frequency_score,
-    ntile(5) over (
-        order by customers.monetary, customers.customer_unique_id
+    least(
+        5, 1 + cast(floor(5 * percent_rank() over (order by monetary)) as integer)
     ) as monetary_score
-from customers
-cross join as_of
+from recency

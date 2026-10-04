@@ -58,12 +58,14 @@ unit_tests:
         - {order_id: o5, item_count: 0, item_revenue: 0.00, payment_value: 0.00, is_revenue_order: false, is_deleted: false}
 
   - name: int_order_lifecycle_durations_and_lateness
+    description: A deleted order is neither delivered nor late (same rule as revenue).
     model: int_order_lifecycle
     given:
       - input: ref('stg_orders')
         rows:
           - order_id: late
             order_status: delivered
+            _is_deleted: false
             order_purchase_ts_utc: "2017-01-01 10:00:00+00"
             order_approved_ts_utc: "2017-01-01 12:00:00+00"
             order_delivered_carrier_ts_utc: "2017-01-02 12:00:00+00"
@@ -71,6 +73,7 @@ unit_tests:
             order_estimated_delivery_ts_utc: "2017-01-04 00:00:00+00"
           - order_id: on_time
             order_status: delivered
+            _is_deleted: false
             order_purchase_ts_utc: "2017-01-01 10:00:00+00"
             order_approved_ts_utc: "2017-01-01 10:30:00+00"
             order_delivered_carrier_ts_utc: "2017-01-02 10:30:00+00"
@@ -78,10 +81,19 @@ unit_tests:
             order_estimated_delivery_ts_utc: "2017-01-10 00:00:00+00"
           - order_id: shipped
             order_status: shipped
+            _is_deleted: false
             order_purchase_ts_utc: "2017-01-01 10:00:00+00"
             order_approved_ts_utc: "2017-01-01 11:00:00+00"
             order_delivered_carrier_ts_utc: "2017-01-02 10:00:00+00"
             order_estimated_delivery_ts_utc: "2017-01-02 00:00:00+00"
+          - order_id: late_deleted
+            order_status: delivered
+            _is_deleted: true
+            order_purchase_ts_utc: "2017-01-01 10:00:00+00"
+            order_approved_ts_utc: "2017-01-01 12:00:00+00"
+            order_delivered_carrier_ts_utc: "2017-01-02 12:00:00+00"
+            order_delivered_customer_ts_utc: "2017-01-05 12:00:00+00"
+            order_estimated_delivery_ts_utc: "2017-01-04 00:00:00+00"
       - input: ref('stg_order_items')
         rows: []
       - input: ref('stg_order_payments')
@@ -107,6 +119,13 @@ unit_tests:
           approved_to_carrier_hours: 23.0
           carrier_to_customer_hours: null
           purchase_to_customer_hours: null
+          is_delivered: false
+          is_late: false
+        - order_id: late_deleted
+          purchase_to_approved_hours: 2.0
+          approved_to_carrier_hours: 24.0
+          carrier_to_customer_hours: 72.0
+          purchase_to_customer_hours: 98.0
           is_delivered: false
           is_late: false
 

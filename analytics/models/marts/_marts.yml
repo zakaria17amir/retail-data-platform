@@ -67,7 +67,7 @@ models:
     description: >
       Grain order (all statuses). customer_sk is the customer version valid at purchase time;
       lifecycle measures from int_order_lifecycle; is_revenue_order excludes canceled/unavailable,
-      deleted and item-less orders.
+      deleted and item-less orders; is_delivered/is_late exclude deleted orders.
     columns:
       - name: order_id
         data_tests: [not_null, unique]

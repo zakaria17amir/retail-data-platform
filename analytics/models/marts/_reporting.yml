@@ -10,6 +10,8 @@ models:
           arguments:
             combination_of_columns: [order_purchase_date, customer_state]
     columns:
+      - name: customer_state
+        data_tests: [not_null]
       - name: order_purchase_date
         data_tests:
           - not_null
@@ -32,7 +34,9 @@ models:
     description: >
       Grain customer_unique_id, customers with at least one revenue order. Recency in days from
       the last revenue order to the latest purchase date in the data; frequency = revenue orders;
-      monetary = ltv = revenue; r/f/m scores 1-5 by ntile (5 = best); orders counts all statuses.
+      monetary = ltv = revenue; orders counts all statuses. Scores 1-5 (5 = best) are tie-safe:
+      recency and monetary by percent_rank bucket (1 + floor(5 * percent_rank), capped at 5),
+      frequency by fixed thresholds 1 -> 1, 2 -> 3, 3 -> 4, >= 4 -> 5.
     config:
       cluster_by: [customer_unique_id]
     columns:
@@ -96,7 +100,7 @@ models:
 
   - name: rpt_delivery_sla
     description: >
-      Grain purchase month x customer state over delivered orders: delivered, late
+      Grain purchase month x customer state over delivered (not deleted) orders: delivered, late
       (delivered after the estimate), late_rate = late / delivered, average purchase-to-customer
       hours.
     config:
@@ -106,6 +110,8 @@ models:
           arguments:
             combination_of_columns: [order_month, customer_state]
     columns:
+      - name: customer_state
+        data_tests: [not_null]
       - name: order_month
         data_tests: [not_null]
       - name: late_rate
@@ -136,3 +142,29 @@ models:
               arguments:
                 min_value: 0
                 max_value: 100
+
+unit_tests:
+  - name: rpt_customer_360_equal_customers_get_equal_scores
+    description: >
+      u_a and u_b have identical recency/frequency/monetary and must share every score;
+      frequency uses fixed thresholds, recency/monetary percent_rank buckets; u_e has no
+      revenue order and is excluded but still sets the as-of date.
+    model: rpt_customer_360
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: a1, customer_unique_id: u_a, is_revenue_order: true, item_revenue: 100, order_purchase_date: "2018-01-10", order_purchase_ts_utc: "2018-01-10 12:00:00+00"}
+          - {order_id: b1, customer_unique_id: u_b, is_revenue_order: true, item_revenue: 100, order_purchase_date: "2018-01-10", order_purchase_ts_utc: "2018-01-10 12:00:00+00"}
+          - {order_id: c1, customer_unique_id: u_c, is_revenue_order: true, item_revenue: 200, order_purchase_date: "2018-05-01", order_purchase_ts_utc: "2018-05-01 12:00:00+00"}
+          - {order_id: c2, customer_unique_id: u_c, is_revenue_order: true, item_revenue: 300, order_purchase_date: "2018-06-01", order_purchase_ts_utc: "2018-06-01 12:00:00+00"}
+          - {order_id: d1, customer_unique_id: u_d, is_revenue_order: true, item_revenue: 10, order_purchase_date: "2018-02-01", order_purchase_ts_utc: "2018-02-01 12:00:00+00"}
+          - {order_id: d2, customer_unique_id: u_d, is_revenue_order: true, item_revenue: 10, order_purchase_date: "2018-02-02", order_purchase_ts_utc: "2018-02-02 12:00:00+00"}
+          - {order_id: d3, customer_unique_id: u_d, is_revenue_order: true, item_revenue: 10, order_purchase_date: "2018-02-03", order_purchase_ts_utc: "2018-02-03 12:00:00+00"}
+          - {order_id: d4, customer_unique_id: u_d, is_revenue_order: true, item_revenue: 10, order_purchase_date: "2018-02-04", order_purchase_ts_utc: "2018-02-04 12:00:00+00"}
+          - {order_id: e1, customer_unique_id: u_e, is_revenue_order: false, item_revenue: 0, order_purchase_date: "2018-06-02", order_purchase_ts_utc: "2018-06-02 12:00:00+00"}
+    expect:
+      rows:
+        - {customer_unique_id: u_a, orders: 1, frequency: 1, monetary: 100, recency_days: 143, recency_score: 1, frequency_score: 1, monetary_score: 2}
+        - {customer_unique_id: u_b, orders: 1, frequency: 1, monetary: 100, recency_days: 143, recency_score: 1, frequency_score: 1, monetary_score: 2}
+        - {customer_unique_id: u_c, orders: 2, frequency: 2, monetary: 500, recency_days: 1, recency_score: 5, frequency_score: 3, monetary_score: 5}
+        - {customer_unique_id: u_d, orders: 4, frequency: 4, monetary: 40, recency_days: 118, recency_score: 4, frequency_score: 5, monetary_score: 1}
