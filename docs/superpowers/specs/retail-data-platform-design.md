@@ -216,26 +216,38 @@ Churn is deliberately excluded (Olist repeat-purchase rate ≈ 3 %).
 **Data science (`ds/`).** EDA notebooks (outputs cleared, rendered to docs), baseline → iteration log,
 SHAP/feature importance, segment error analysis, one model card per model.
 
-**Feature store — Feast (`ml/features/`).** Feature views as code; offline = gold Parquet/DuckDB with
+**Packaging.** `ml/` is a separate uv project (own lockfile; Feast/MLflow/Evidently pins conflict with
+the workspace), package `retail_ml` under `ml/src/`, one image `retail-ml` for the CLI and the API.
+Airflow runs every ML task as a DockerOperator container of that image (Airflow's environment cannot
+install the ML stack), in a 1-slot `ml` pool.
+
+**Feature store — Feast (`ml/feature_repo/`).** Feature views as code; offline = gold Parquet/DuckDB with
 point-in-time-correct joins; online = Redis, materialised by Airflow. Same definitions reused by the
 real-time layer.
 
-**Training (`ml/pipelines/`).** Config-driven sklearn/LightGBM pipelines run by Airflow `train_<model>`:
+**Training (`ml/src/retail_ml/`).** Config-driven sklearn/LightGBM pipelines run by Airflow `train_<model>`:
 features → time-based split → train → evaluate → log to MLflow (params, metrics, artefacts, data hash,
 git SHA) → register as *challenger*. Promotion to *champion* requires beating the champion on holdout
 and passing model tests; automatic by default, human-approval by flag (the demo mode). MLflow backend:
 Postgres + MinIO.
 
-**Serving (`ml/serving/`).** FastAPI: `POST /predict/late-delivery` (online features from Feast),
+**Serving (`retail_ml.serving`).** FastAPI: `POST /predict/late-delivery` (online features from Feast),
 `POST /recommend` (section 9), `/health`, `/metrics`, `/reload`. Pydantic contracts, Locust load test
-for p95. Nightly batch scoring DAG → `gold/pred_late_delivery/`.
+for p95. Nightly batch scoring DAG → `gold/pred_late_delivery/`. Result: 4 workers measure p50 41 ms /
+p95 120 ms on the laptop, missing the 50 ms p95 target (ADR-0006); `/reload` reaches one worker, a
+champion switch restarts the service.
 
 **Monitoring.** Evidently daily DAG: feature drift, prediction drift, delayed ground-truth performance
 (by week) → HTML to MinIO + `ml_monitoring` table. Prometheus/Grafana for service metrics (dashboard
-JSON committed). Drift/performance thresholds trigger `train_<model>`.
+JSON committed). Drift/performance thresholds trigger `train_<model>` (with a retrain cooldown).
+Replayed history never labels the scored open orders, so the current window is simulated live: the
+28 days before an anchor (last approval day with ≥ 20 % of its trailing mean volume), scored by the
+champion with features as of approval; drift tests are KS / chi-square under 1,000 rows, Evidently
+defaults above.
 
-**CI.** Unit tests for features/pipeline steps; smoke-train on sample with metric floor; API schema
-contract test; image build. No DVC (MLflow + Delta time travel suffice).
+**CI.** Unit tests for features/pipeline steps; metric floor on a synthetic dataset (200 sample orders
+are too few for a floor); API schema contract test; image build and a smoke train on the sample gold
+(file-based MLflow, run + artefact asserted). No DVC (MLflow + Delta time travel suffice).
 
 ## 9. Real-time ML
 

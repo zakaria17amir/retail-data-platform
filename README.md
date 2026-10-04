@@ -89,6 +89,21 @@ make airflow-cli ARGS="dags unpause gold_daily"   # then silver_hourly, ingest_h
 Power BI over the Parquet marts: [bi/README.md](bi/README.md). Details, DAGs and alerts:
 [docs/runbooks/analytics.md](docs/runbooks/analytics.md).
 
+### ML (Feast, MLflow, serving, monitoring)
+
+```sh
+make ml-build && make up PROFILE=ml   # MLflow http://127.0.0.1:5000, Redis, prediction API
+make ml ARGS="materialize"            # Feast online store from gold
+make ml ARGS="train late_delivery"    # likewise demand_forecast; champion via MLflow aliases
+make ml ARGS="score late_delivery"    # batch scores; `forecast demand` for the 28-day forecast
+make ml ARGS="monitor late_delivery"  # Evidently drift + delayed ground truth, exit 3 on breach
+make up PROFILE=observability         # Prometheus + Grafana serving dashboard at http://127.0.0.1:3000
+```
+
+After a new champion, `docker compose --profile ml restart serving` (`/reload` reaches one of the 4
+workers). DAGs, promotion and troubleshooting: [docs/runbooks/ml.md](docs/runbooks/ml.md); EDA,
+iteration log and model cards: [ds/](ds/).
+
 ## Status
 
 | # | Phase | Status |
@@ -97,7 +112,7 @@ Power BI over the Parquet marts: [bi/README.md](bi/README.md). Details, DAGs and
 | 1 | Ingestion | In progress: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
 | 2 | Lakehouse | In progress: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
 | 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
-| 4 | Batch ML + MLOps | Planned |
+| 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
 | 5 | Real-time ML | Planned |
 | 6 | GenAI & agents | Planned |
 | 7 | Cloud | Planned |

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -30,6 +30,10 @@ jobs:
       - env:
           CI: "true"
         run: uv run --locked --project orchestration pytest orchestration/tests
+      # ml is a separate uv project (own lock): unit tests incl. the synthetic metric floor + API contract
+      - run: uv run --locked --project ml ruff check ml
+      - run: uv run --locked --project ml mypy --config-file ml/pyproject.toml ml/src
+      - run: uv run --locked --project ml pytest ml
 
   integration:
     needs: lint-test
@@ -56,7 +60,7 @@ jobs:
   ingest:
     needs: lint-test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -66,15 +70,21 @@ jobs:
       - run: |
           cp .env.example .env
           echo OLIST_DATA_DIR=tests/fixtures/olist_sample >> .env
+          # build arg of retail-ml, as `make ml-build` passes it
+          echo "GIT_SHA=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
-      # tags match Compose's default image names (project "retail"), so `make up` reuses these builds
+      # tags match Compose's default image names (project "retail"), so `make up` reuses these builds;
+      # serving = the retail-ml image (`make ml-build`), built here for the GHA cache
       - uses: docker/bake-action@v7
         with:
           source: .
           files: docker-compose.yml
-          targets: kafka-connect,spark,replayer,clickstream-sim
+          targets: kafka-connect,spark,replayer,clickstream-sim,serving
           load: true
           set: |
+            serving.tags=retail-ml
+            serving.cache-from=type=gha,scope=retail-ml
+            serving.cache-to=type=gha,scope=retail-ml,mode=max
             kafka-connect.tags=retail-kafka-connect
             kafka-connect.cache-from=type=gha,scope=kafka-connect
             kafka-connect.cache-to=type=gha,scope=kafka-connect,mode=max
@@ -103,6 +113,27 @@ jobs:
       # silver now holds the sample; build runs the data and unit tests (warn severity does not fail)
       - run: make gold
       - run: cd analytics && uv run dbt test --select test_type:unit
+      # retail-ml image on the sample gold with a file-based MLflow (sqlite + local artefacts in the
+      # container, no server). The default split keeps both classes in val (41 orders, 4 late) and test
+      # (41, 6) on the 200-order sample; promotion is not asserted: LightGBM collapses to the prior there.
+      - name: smoke train late_delivery
+        env:
+          SMOKE_CHECK: |
+            import os
+            import mlflow
+            c = mlflow.MlflowClient()
+            runs = c.search_runs([c.get_experiment_by_name("late_delivery").experiment_id])
+            types = sorted(r.data.tags["model_type"] for r in runs)
+            assert types == ["constant_prior", "lightgbm", "logistic"], types
+            shas = {r.data.tags["git_sha"] for r in runs}
+            assert shas == {os.environ["EXPECTED_SHA"]}, shas
+            model = mlflow.pyfunc.load_model("models:/late_delivery/1")
+            print("runs", types, "git_sha", shas, "model", model.metadata.model_id)
+        run: >-
+          docker compose run --rm --no-deps -w /tmp
+          -e SMOKE_CHECK -e EXPECTED_SHA="$GIT_SHA"
+          -e MLFLOW_TRACKING_URI=sqlite:////tmp/mlflow.db -e FEAST_REGISTRY_PATH=/tmp/registry.db
+          --entrypoint sh ml-cli -ec 'retail-ml train late_delivery && python -c "$SMOKE_CHECK"'
       - if: failure()
         run: docker compose --profile ingest logs --tail 100
       - if: always()

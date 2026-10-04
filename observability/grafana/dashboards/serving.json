@@ -95,7 +95,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "model_version_info",
+          "expr": "model_version_info == 1",
           "format": "table",
           "instant": true
         }
