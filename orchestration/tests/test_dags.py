@@ -30,6 +30,8 @@ ML_DAG_IDS = {
     "score_late_delivery",
     "forecast_demand",
     "monitor_late_delivery",
+    "generate_sessions",
+    "train_recommender",
 }
 DAG_IDS = {"ingest_health", "silver_hourly", "gold_daily", "lakehouse_maintenance"} | ML_DAG_IDS
 TI = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
@@ -285,6 +287,10 @@ def test_ml_dag_schedules(dagbag: DagBag) -> None:
     assert ml_common.SCORES in dags["score_late_delivery"].get_task("score").outlets
     # daily cadence after scoring; monitor scores its own window and no longer reads the file
     assert dags["monitor_late_delivery"].timetable.asset_condition == AssetAll(ml_common.SCORES)
+    # sessions are regenerated from each gold publish; the recommender retrains only on new sessions
+    assert dags["generate_sessions"].timetable.asset_condition == AssetAll(common.GOLD)
+    assert ml_common.SESSIONS in dags["generate_sessions"].get_task("generate").outlets
+    assert dags["train_recommender"].timetable.asset_condition == AssetAll(ml_common.SESSIONS)
     for dag_id in ML_DAG_IDS:
         assert dags[dag_id].max_active_runs == 1, dag_id
         assert not dags[dag_id].catchup, dag_id
@@ -300,17 +306,45 @@ def test_ml_task_commands(dagbag: DagBag) -> None:
     assert command("score_late_delivery", "score") == ["score", "late_delivery"]
     assert command("forecast_demand", "forecast") == ["forecast", "demand"]
     assert command("monitor_late_delivery", "monitor") == ["monitor", "late_delivery"]
+    assert command("train_recommender", "train")[:2] == ["train", "recommender"]
+    assert command("train_recommender", "publish") == ["publish-candidates"]
+
+
+def test_recommender_publishes_after_train(dagbag: DagBag) -> None:
+    dag = dagbag.dags["train_recommender"]
+    assert dag.get_task("publish").upstream_task_ids == {"train"}
+    # peak 1.98 GiB on the full history
+    assert dag.get_task("train").mem_limit == "3g"
+
+
+def test_generate_sessions_runs_the_simulator(dagbag: DagBag) -> None:
+    t = dagbag.dags["generate_sessions"].get_task("generate")
+    assert t.image == "retail-clickstream-sim"
+    assert list(t.command) == [
+        "generate",
+        "--gold-dir",
+        "/data/gold",
+        "--out",
+        "/data/gold/ml/sessions_offline.parquet",
+    ]
+    assert t.auto_remove == "success"
+    assert t.mem_limit == "2g"
+    (mount,) = t.mounts
+    assert mount["Target"] == "/data"
+    assert mount["Source"] == f"{os.environ['HOST_REPO_DIR']}/data"
+    assert ml_common.SESSIONS.uri.endswith("/data/gold/ml/sessions_offline.parquet")
 
 
 def test_ml_task_runs_retail_ml_image(dagbag: DagBag) -> None:
-    for dag_id in ML_DAG_IDS:
+    for dag_id in ML_DAG_IDS - {"generate_sessions"}:
         for t in dagbag.dags[dag_id].tasks:
             if t.task_type != "DockerOperator":
                 continue
             assert t.image == "retail-ml", t.task_id
             assert t.network_mode == "retail_retail"
             assert t.auto_remove == "success"
-            assert t.mem_limit == "2g"
+            if (dag_id, t.task_id) != ("train_recommender", "train"):
+                assert t.mem_limit == "2g", (dag_id, t.task_id)
             assert t.environment["MLFLOW_TRACKING_URI"] == "http://mlflow:5000"
             assert t.environment["REDIS_URL"] == "redis://redis:6379/0"
             assert t.environment["FEAST_REPO_PATH"] == "/feature_repo"
@@ -379,7 +413,7 @@ def test_every_ml_docker_task_uses_ml_pool(dagbag: DagBag) -> None:
     docker = [
         t for d in ML_DAG_IDS for t in dagbag.dags[d].tasks if t.task_type == "DockerOperator"
     ]
-    assert len(docker) == 6
+    assert len(docker) == 9
     for t in docker:
         assert t.pool == "ml", (t.dag_id, t.task_id)
 
@@ -488,7 +522,7 @@ def test_train_passes_promotion_mode(
     monkeypatch.setenv("HOST_REPO_DIR", "/repo")
     monkeypatch.setenv("PROMOTION_MODE", mode)
     bag = DagBag(dag_folder=str(DAGS_DIR / "ml_dags.py"))
-    for model in ("late_delivery", "demand_forecast"):
+    for model in ("late_delivery", "demand_forecast", "recommender"):
         train = bag.dags[f"train_{model}"].get_task("train")
         assert list(train.command) == ["train", model, "--promotion-mode", mode]
 

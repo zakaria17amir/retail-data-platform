@@ -582,7 +582,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 3g  # train recommender peaks at 1.98 GiB on the full history
     networks: [retail]
 
   # topic and DDL need different clients (rpk, psql), so two one-shot inits
