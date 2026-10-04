@@ -15,6 +15,7 @@ from prometheus_client import (
 from prometheus_client.multiprocess import MultiProcessCollector
 
 PROBABILITY_BUCKETS = [round(0.05 * i, 2) for i in range(1, 21)]
+RECOMMEND_BUCKETS = [0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.25, 0.5, 1.0, 2.5]
 
 
 class Metrics:
@@ -51,6 +52,18 @@ class Metrics:
             "Champion version being served",
             ["version"],
             multiprocess_mode="max",
+            registry=self.registry,
+        )
+        self.recommend_requests = Counter(
+            "recommend_requests_total",
+            "Answered /recommend requests by strategy",
+            ["strategy"],
+            registry=self.registry,
+        )
+        self.recommend_latency = Histogram(
+            "recommend_latency_seconds",
+            "/recommend handler latency (features, candidates, rerank)",
+            buckets=RECOMMEND_BUCKETS,
             registry=self.registry,
         )
 

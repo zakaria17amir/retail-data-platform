@@ -478,6 +478,9 @@ services:
   redis:
     profiles: [ml, realtime]
     image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+    # candidates + Feast online rows; noeviction: a full store fails writes loudly instead of
+    # silently dropping candidate lists
+    command: ["redis-server", "--maxmemory", "640mb", "--maxmemory-policy", "noeviction"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     healthcheck:
@@ -489,7 +492,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 768m
     networks: [retail]
 
   serving:
@@ -623,6 +626,8 @@ services:
     command: ["-c", "/feature_repo", "serve", "-h", "0.0.0.0", "-p", "6566"]
     environment:
       <<: *ml-env
+      # `feast serve` substitutes REDIS_URL raw into feature_store.yaml: Feast connection format
+      REDIS_URL: "redis:6379,db=0"
     ports:
       - "127.0.0.1:${FEAST_PORT:-6566}:6566"
     volumes:

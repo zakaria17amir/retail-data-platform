@@ -33,6 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("model", choices=["late_delivery"])
     sub.add_parser("materialize", help="apply Feast definitions and load the online store")
     sub.add_parser("publish-candidates", help="champion recommender candidates -> Redis")
+    sub.add_parser("stream-score", help="score CDC order approvals with the late-delivery champion")
     monitor = sub.add_parser("monitor", help="drift + delayed ground truth; exit 3 on breach")
     monitor.add_argument("model", choices=["late_delivery"])
     monitor.add_argument("--config", type=Path, default=None)
@@ -56,6 +57,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         print(json.dumps(publish_candidates(MlflowClient(), "recommender")))
         return 0
+
+    if args.command == "stream-score":
+        from retail_ml.streaming.score import main as stream_score
+
+        return stream_score()
 
     if args.command == "train" and args.model == "recommender":
         from retail_ml.recommender.train import load_recommender_config
