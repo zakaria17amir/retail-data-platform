@@ -1,0 +1,3 @@
+region            = "eu-west-1"
+state_bucket_name = "retail-data-platform-tfstate-<account-id>"
+lock_table_name   = "retail-data-platform-tf-locks"
