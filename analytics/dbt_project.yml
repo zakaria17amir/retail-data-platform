@@ -19,3 +19,10 @@ models:
     marts:
       +materialized: "{{ 'external' if target.type == 'duckdb' else 'table' }}"
       +schema: marts
+    ml:
+      +materialized: "{{ 'external' if target.type == 'duckdb' else 'table' }}"
+      +schema: ml
+      # rendered by the external materialization, where `this` exists: ml_<name> -> <external_root>/ml/<name>.parquet
+      +location: "{% raw %}{{ adapter.external_root() }}/ml/{{ this.identifier | replace('ml_', '', 1) }}.parquet{% endraw %}"
+      # DuckDB's COPY creates no parent directory; an empty partitioned COPY creates <external_root>/ml
+      +pre-hook: "{% if target.type == 'duckdb' %}copy (select 1 as k, 1 as v where false) to '{{ adapter.external_root() }}/ml' (format parquet, partition_by (k), overwrite_or_ignore true){% endif %}"

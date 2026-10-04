@@ -16,6 +16,21 @@ GOLD = Asset("file:///opt/airflow/data/gold")
 START = datetime(2026, 10, 1, tzinfo=UTC)
 
 
+def send_alert(payload: dict[str, Any]) -> None:
+    try:
+        url = os.environ.get("ALERT_WEBHOOK_URL")
+        if not url:
+            log.error("alert (ALERT_WEBHOOK_URL unset): %s", json.dumps(payload))
+            return
+        req = urllib.request.Request(
+            url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            log.info("alert sent: %s", json.dumps(payload))
+    except Exception:
+        log.exception("alert not sent")
+
+
 def on_failure(context: Context) -> None:
     try:
         ti = context["ti"]
@@ -23,16 +38,7 @@ def on_failure(context: Context) -> None:
         log_url = getattr(ti, "log_url", None) or (
             f"{base}/dags/{ti.dag_id}/runs/{ti.run_id}/tasks/{ti.task_id}"
         )
-        payload = {"dag": ti.dag_id, "task": ti.task_id, "run_id": ti.run_id, "log_url": log_url}
-        url = os.environ.get("ALERT_WEBHOOK_URL")
-        if not url:
-            log.error("task failed (ALERT_WEBHOOK_URL unset): %s", json.dumps(payload))
-            return
-        req = urllib.request.Request(
-            url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            log.info("failure alert sent: %s", json.dumps(payload))
+        send_alert({"dag": ti.dag_id, "task": ti.task_id, "run_id": ti.run_id, "log_url": log_url})
     except Exception:
         log.exception("failure alert not sent")
 
@@ -41,10 +47,7 @@ def gold_is_due(last_end: datetime | None, now: datetime, min_hours: float) -> b
     return min_hours <= 0 or last_end is None or now - last_end >= timedelta(hours=min_hours)
 
 
-def last_build_end(api: str = "http://localhost:8080") -> datetime | None:
-    # asset-triggered runs have no logical_date, so the Task SDK's get_previous_dagrun and
-    # prev_end_date_success are always None; ask the REST API (served in this container) instead.
-    # A short-circuited run also ends in success, so look for the last publish_gold that succeeded.
+def api_get(path: str, api: str = "http://localhost:8080") -> Any:
     login = urllib.request.Request(
         f"{api}/auth/token",
         data=json.dumps(
@@ -54,13 +57,20 @@ def last_build_end(api: str = "http://localhost:8080") -> datetime | None:
     )
     with urllib.request.urlopen(login, timeout=10) as resp:
         token = json.load(resp)["access_token"]
-    tis = urllib.request.Request(
-        f"{api}/api/v2/dags/gold_daily/dagRuns/~/taskInstances"
+    req = urllib.request.Request(f"{api}{path}", headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.load(resp)
+
+
+def last_build_end(api: str = "http://localhost:8080") -> datetime | None:
+    # asset-triggered runs have no logical_date, so the Task SDK's get_previous_dagrun and
+    # prev_end_date_success are always None; ask the REST API (served in this container) instead.
+    # A short-circuited run also ends in success, so look for the last publish_gold that succeeded.
+    found = api_get(
+        "/api/v2/dags/gold_daily/dagRuns/~/taskInstances"
         "?task_id=publish_gold&state=success&order_by=-end_date&limit=1",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    with urllib.request.urlopen(tis, timeout=10) as resp:
-        found = json.load(resp)["task_instances"]
+        api,
+    )["task_instances"]
     return datetime.fromisoformat(found[0]["end_date"]) if found else None
 
 

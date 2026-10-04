@@ -1,8 +1,19 @@
 name: retail
 
+# retail-ml monitor overrides for airflow and ml-cli; empty = the image's documented default
+x-monitor-env: &monitor-env
+  DRIFT_SHARE_THRESHOLD: ${DRIFT_SHARE_THRESHOLD:-}
+  REFERENCE_SAMPLE_ROWS: ${REFERENCE_SAMPLE_ROWS:-}
+  MIN_CURRENT_ROWS: ${MIN_CURRENT_ROWS:-}
+  MIN_LABELLED: ${MIN_LABELLED:-}
+  MIN_POSITIVES: ${MIN_POSITIVES:-}
+  MONITOR_WINDOW_DAYS: ${MONITOR_WINDOW_DAYS:-}
+  MONITOR_TAIL_RATIO: ${MONITOR_TAIL_RATIO:-}
+  MONITORING_REPORT_ROOT: ${MONITORING_REPORT_ROOT:-}
+
 services:
   postgres:
-    profiles: [core, ingest, demo, analytics]
+    profiles: [core, ingest, demo, analytics, ml]
     image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
@@ -32,7 +43,7 @@ services:
     networks: [retail]
 
   minio:
-    profiles: [core, ingest, analytics]
+    profiles: [core, ingest, analytics, ml]
     # Silo (pgsty), maintained MinIO fork; minio/minio was removed from Docker Hub, see ADR-0002
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
@@ -56,7 +67,7 @@ services:
     networks: [retail]
 
   minio-init:
-    profiles: [core, ingest, analytics]
+    profiles: [core, ingest, analytics, ml]
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
     depends_on:
       minio:
@@ -323,9 +334,12 @@ services:
         : "$${HOST_REPO_DIR:?set HOST_REPO_DIR in .env (PWD is not exported by this shell)}"
         (umask 077 && python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
           > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE")
+        airflow pools set ml 1 "serialise ml jobs (feast file registry)"
         exec airflow standalone
     environment:
-      <<: *airflow-env
+      # monitor overrides reach the retail-ml tasks only when non-empty (ml_common.PASSTHROUGH); GIT_SHA
+      # is left out, so ML tasks log the SHA baked into the image
+      <<: [*airflow-env, *monitor-env]
       # LocalExecutor pre-forks one worker per parallelism slot (default 32), too much for the 2g limit
       AIRFLOW__CORE__PARALLELISM: "4"
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
@@ -346,6 +360,10 @@ services:
       # absolute: Cosmos runs dbt from a temp copy of the project, so the ../data defaults would break
       DUCKDB_PATH: /opt/airflow/data/warehouse/retail.duckdb
       GOLD_DIR: /opt/airflow/data/gold
+      # train DAGs pass it as --promotion-mode to the retail-ml containers
+      PROMOTION_MODE: ${PROMOTION_MODE:-auto}
+      # monitor breaches retrain at most once per cooldown
+      RETRAIN_COOLDOWN_HOURS: ${RETRAIN_COOLDOWN_HOURS:-72}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:
@@ -370,6 +388,247 @@ services:
       resources:
         limits:
           memory: 2g
+    networks: [retail]
+
+  mlflow-init:
+    profiles: [ml]
+    build:
+      context: ml
+      dockerfile: mlflow.Dockerfile
+    image: retail-mlflow:3.16.1
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    command:
+      - python
+      - -c
+      - |
+        import os, psycopg2
+        c = psycopg2.connect(host="postgres", user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"], dbname=os.environ["POSTGRES_DB"])
+        c.autocommit = True
+        cur = c.cursor()
+        cur.execute("select 1 from pg_database where datname = %s", ("mlflow",))
+        if cur.fetchone() is None:
+            cur.execute("create database mlflow")
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks: [retail]
+
+  mlflow:
+    profiles: [ml]
+    build:
+      context: ml
+      dockerfile: mlflow.Dockerfile
+    image: retail-mlflow:3.16.1
+    command:
+      - mlflow
+      - server
+      - --backend-store-uri
+      - postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/mlflow
+      - --artifacts-destination
+      - s3://${LAKEHOUSE_BUCKET}/mlflow
+      - --serve-artifacts
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --workers
+      - "2"
+      # host validation rejects the compose service name by default (only localhost + private IPs)
+      - --allowed-hosts
+      - mlflow,mlflow:5000,localhost,localhost:5000,localhost:${MLFLOW_PORT:-5000},127.0.0.1,127.0.0.1:${MLFLOW_PORT:-5000}
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      # the GenAI job runner forks ~7 huey consumers (~1.3 GB); tracking and the registry don't need it
+      MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks: [retail]
+
+  redis:
+    profiles: [ml]
+    image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks: [retail]
+
+  serving:
+    profiles: [ml]
+    build: &ml-build
+      context: ml
+      args:
+        # baked as ENV GIT_SHA (MLflow lineage tag); `make ml-build` / `make ml` pass the short HEAD
+        GIT_SHA: ${GIT_SHA:-unknown}
+    image: retail-ml
+    # image ENTRYPOINT is retail-ml (DockerOperator, ml-cli); reset so the command can be uvicorn
+    entrypoint: []
+    # 4 workers share Prometheus mmap files; a restart must not inherit a dead worker's counters.
+    # POST /reload reloads only the worker that handles it: to switch the champion on all 4,
+    # `docker compose --profile ml restart serving`
+    command:
+      - sh
+      - -ec
+      - >-
+        rm -rf "$$PROMETHEUS_MULTIPROC_DIR" && mkdir -p "$$PROMETHEUS_MULTIPROC_DIR" &&
+        exec uvicorn retail_ml.serving.app:app --host 0.0.0.0 --port 8000 --workers 4
+    environment:
+      <<: &ml-env
+        MLFLOW_TRACKING_URI: http://mlflow:5000
+        REDIS_URL: redis://redis:6379/0
+        FEAST_REPO_PATH: /feature_repo
+        FEAST_REGISTRY_PATH: /data/feast/registry.db
+        GOLD_DIR: /data/gold
+        PROMOTION_MODE: ${PROMOTION_MODE:-auto}
+      # serving only (not ml-cli): Feast reads the first, prometheus_client the second
+      PROMETHEUS_MULTIPROCESS_DIR: /tmp/prometheus
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+    ports:
+      - "127.0.0.1:${SERVING_PORT:-8000}:8000"
+    volumes:
+      - ./data:/data:ro
+      - ./ml/feature_repo:/feature_repo
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # contract with T5: /health is liveness, 200 even with no model loaded (body says model_loaded=false),
+    # so `make up PROFILE=ml` (--wait) succeeds on a fresh stack with an empty registry
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1536m  # 4 workers ≈ 0.9 GiB idle (≈ 230 MiB each)
+    networks: [retail]
+
+  ml-cli:
+    profiles: [ml]
+    build: *ml-build
+    image: retail-ml
+    # one-off batch commands only (`make ml ARGS=…`): scale 0 keeps `up` from starting it, `run` still works
+    scale: 0
+    entrypoint: ["retail-ml"]
+    environment:
+      <<: [*ml-env, *monitor-env]
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - ./data:/data
+      - ./ml/feature_repo:/feature_repo
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    networks: [retail]
+
+  prometheus:
+    profiles: [observability]
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [retail]
+
+  grafana:
+    profiles: [observability]
+    image: grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/serving.json
+    # runtime guard, not `:?` interpolation, which would fail `docker compose` for every profile
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        : "$${GF_SECURITY_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}"
+        exec /run.sh
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
     networks: [retail]
 
 configs:
