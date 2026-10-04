@@ -77,6 +77,18 @@ make status      # adds silver counts, rejects and "rule X rejected N rows (p %)
 
 Details, rejects inspection and reset: [docs/runbooks/lakehouse.md](docs/runbooks/lakehouse.md).
 
+### Analytics (silver → gold marts, metrics, Airflow)
+
+```sh
+make gold                   # dbt-duckdb: star schema + Parquet marts in data/gold/, all dbt tests
+cd analytics && PYTHONIOENCODING=utf-8 uv run mf query --metrics revenue,aov --group-by metric_time__month
+make up PROFILE=analytics   # Airflow 3 at http://127.0.0.1:8088, user admin / AIRFLOW_ADMIN_PASSWORD
+make airflow-cli ARGS="dags unpause gold_daily"   # then silver_hourly, ingest_health
+```
+
+Power BI over the Parquet marts: [bi/README.md](bi/README.md). Details, DAGs and alerts:
+[docs/runbooks/analytics.md](docs/runbooks/analytics.md).
+
 ## Status
 
 | # | Phase | Status |
@@ -84,7 +96,7 @@ Details, rejects inspection and reset: [docs/runbooks/lakehouse.md](docs/runbook
 | 0 | Foundation | In progress |
 | 1 | Ingestion | In progress: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
 | 2 | Lakehouse | In progress: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
-| 3 | Analytics | Planned |
+| 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
 | 4 | Batch ML + MLOps | Planned |
 | 5 | Real-time ML | Planned |
 | 6 | GenAI & agents | Planned |

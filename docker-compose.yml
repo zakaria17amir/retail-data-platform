@@ -333,6 +333,9 @@ services:
       # host path of the repo: DockerOperator bind mounts are resolved by the host daemon, not this container
       HOST_REPO_DIR: ${HOST_REPO_DIR:-$PWD}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # browser-facing URL for log links; the execution API default derives from it, so pin that to the in-container port
+      AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8088}
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://localhost:8080/execution/
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}

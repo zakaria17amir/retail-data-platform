@@ -25,6 +25,7 @@ volumes/
 
 # dbt
 analytics/target/
+analytics/target-snowflake/
 analytics/dbt_packages/
 analytics/logs/
 analytics/.user.yml
