@@ -16,7 +16,9 @@ Feast, keep a Snowflake path, define each metric once, and be scheduled with sil
   dbt-snowflake would downgrade `certifi` workspace-wide, so `make dbt-parse` runs it in an ephemeral
   pinned `uv tool run` env writing `target-snowflake/` (`target/` stays the local manifest).
 - **Metrics:** MetricFlow is the single definition. A revenue order is not `canceled`/`unavailable`, not
-  deleted and has item revenue > 0 (also the AOV denominator).
+  deleted and has item revenue > 0 (also the AOV denominator). Deleted orders are neither revenue nor
+  delivered/late; deleted item/payment lines of a live order are excluded from the order totals and
+  `fct_order_items.is_revenue_order`; facts keep deleted rows with `is_deleted`.
 - **SCD2 joins:** point-in-time on `valid_from`/`valid_to`, but a key's first version also matches earlier
   facts: CDC `valid_from` is processing time (2026), Olist facts are 2016-18.
 - **Airflow 3.3 `standalone`**, one container: LocalExecutor, SimpleAuthManager (admin password from
@@ -36,4 +38,18 @@ Feast, keep a Snowflake path, define each metric once, and be scheduled with sil
   until clickstream arrives. `mf` on a Windows console needs `PYTHONIOENCODING=utf-8`.
 - The Snowflake env is pinned only at top level and is parsed, never run.
 - No Airflow SLAs in v3 (Airflow 3 dropped them); `ingest_health` and dbt freshness cover staleness.
+- Source freshness is warn-only (warn 6 h, no error) and off for the static reference tables
+  (`categories`, `products`, `sellers`, `geolocation_points`, `zip_centroids`), which the replayer
+  never reloads. `ingest_health` (`BRONZE_FRESHNESS_HOURS`) owns staleness alerts, so a paused replay
+  never fails `gold_daily`.
+- `_rule_metrics` has one row per silver micro-batch, not per run, so it has no grain test;
+  `rpt_data_quality` sums the batches per run/table/rule.
+- `gold_daily` short-circuits when its last success is less than `GOLD_MIN_INTERVAL_HOURS` (20 h) old,
+  so hourly silver publications do not rebuild gold every hour; set it to 0 to force a rebuild.
+- Cosmos runs with `should_detach_multiple_parents_tests=True`: a test with several parents runs once,
+  after every parent is built.
+- DuckDB mart views store the Parquet path of the last builder (host `../data/gold` vs container
+  `/opt/airflow/data/gold`). Consumers read the Parquet files, never the DuckDB views; host `duckdb`
+  queries of mart views break after an Airflow run until `make gold`.
+- dbt-core pulls protobuf/pathspec downgrades into the workspace (accepted).
 - Rejected: dbt-delta plugin (`delta_scan` suffices), CeleryExecutor (more containers on one host).

@@ -3,7 +3,7 @@
 > **Manual step for the human.** No agent can drive Power BI Desktop. The semantic model (TMDL) is
 > committed as text; the report pages, the `.pbix` and the screenshots must be built by hand:
 >
-> 1. Build gold first (`dbt build --target local`) so `data/gold/*.parquet` exists.
+> 1. Build gold first (`make gold` from the repo root) so `data/gold/*.parquet` exists.
 > 2. Open `bi/retail.pbip` in Power BI Desktop (Windows). If Desktop refuses the project, enable
 >    *File → Options → Preview features*: "Power BI Project (.pbip) save option", "Store semantic
 >    model using TMDL format" and "Store reports using enhanced metadata format (PBIR)", then restart.
@@ -69,6 +69,10 @@ All many-to-one, single direction.
 
 Product/seller filters reach `fct_order_items` only, so on product/seller visuals use Revenue (and
 `rpt_product_performance` columns), not Orders/AOV.
+
+`fct_order_items`, `fct_payments` and `fct_reviews` keep CDC-deleted rows with `is_deleted`. Revenue
+already excludes deleted lines (`is_revenue_order`); filter `is_deleted = FALSE` on any visual that
+uses payment or review columns directly.
 
 ## Page spec
 

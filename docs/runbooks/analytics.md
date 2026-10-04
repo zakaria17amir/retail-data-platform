@@ -16,6 +16,17 @@ make sqlfluff
 (clickstream `at_least_one` before the first sim run, zip codes missing from `dim_geo`). DuckDB allows
 one writer: do not run `make gold` while the Airflow `gold_daily` DAG is running.
 
+DuckDB mart views store the Parquet path of the last builder (host `../data/gold` vs container
+`/opt/airflow/data/gold`). Consumers read the Parquet files, never the DuckDB views; host `duckdb`
+queries of mart views break after an Airflow run until `make gold`.
+
+Deleted orders are neither revenue nor delivered/late; CDC-deleted item, payment and review rows stay in
+the facts with `is_deleted` and are excluded from revenue, order totals and `rpt_product_performance`.
+`rpt_data_quality` sums the per-micro-batch `_rule_metrics` rows per run/table/rule.
+
+Source freshness (`dbt source freshness`, run by `gold_daily`) only warns after 6 h and is off for the
+static reference tables (categories, products, sellers, geolocation, zip centroids).
+
 ## Query metrics (MetricFlow)
 
 ```sh
@@ -49,6 +60,12 @@ make airflow-cli ARGS="dags trigger silver_hourly"     # run now; gold_daily fol
 make airflow-cli ARGS="dags trigger gold_daily"        # gold only
 make airflow-cli ARGS="dags list-runs gold_daily"
 ```
+
+`gold_daily` skips its build (short-circuit) when its last successful run ended less than
+`GOLD_MIN_INTERVAL_HOURS` (default 20) ago, so hourly silver publications rebuild gold about once a
+day. Set `GOLD_MIN_INTERVAL_HOURS=0` in `.env` (then `make up PROFILE=analytics`) to build on every
+trigger. Cosmos runs with `should_detach_multiple_parents_tests=True`: a test with several parents
+(relationships, reconciliation) runs once, after all its parents are built.
 
 `lakehouse_maintenance` (weekly OPTIMIZE + VACUUM) runs Spark like `silver_hourly`; both use
 DockerOperator over the host Docker socket, so the `retail-spark` image must be built.

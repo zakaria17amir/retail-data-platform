@@ -81,7 +81,7 @@ Details, rejects inspection and reset: [docs/runbooks/lakehouse.md](docs/runbook
 
 ```sh
 make gold                   # dbt-duckdb: star schema + Parquet marts in data/gold/, all dbt tests
-cd analytics && PYTHONIOENCODING=utf-8 uv run mf query --metrics revenue,aov --group-by metric_time__month
+(cd analytics && PYTHONIOENCODING=utf-8 uv run mf query --metrics revenue,aov --group-by metric_time__month)
 make up PROFILE=analytics   # Airflow 3 at http://127.0.0.1:8088, user admin / AIRFLOW_ADMIN_PASSWORD
 make airflow-cli ARGS="dags unpause gold_daily"   # then silver_hourly, ingest_health
 ```
