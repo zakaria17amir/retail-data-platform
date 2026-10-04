@@ -70,6 +70,9 @@ def test_point_in_time_join_never_uses_a_snapshot_after_approval(
     )
     out = historical_seller_features(store, orders).set_index("order_id")
     assert list(out.index) == ["a", "b", "c", "d"]
+    # bounded-memory path: time-sorted chunks give the same rows in the caller's order
+    chunked = historical_seller_features(store, orders, chunk_size=1).set_index("order_id")
+    pd.testing.assert_frame_equal(chunked, out)
     # latest snapshot dated <= approval, created_ts breaks the same-day tie; never the 01-11 row
     assert out.loc["a", "seller_orders_90d"] == 3
     assert out.loc["b", "seller_late_rate_90d"] == 0.25

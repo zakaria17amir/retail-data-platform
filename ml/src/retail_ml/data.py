@@ -68,8 +68,15 @@ def apply_feature_definitions(store: FeatureStore, repo: Path) -> None:
     store.apply(objects)
 
 
-def historical_seller_features(store: FeatureStore, orders: pd.DataFrame) -> pd.DataFrame:
-    """Point-in-time seller features as of each order's approval; row order preserved."""
+def historical_seller_features(
+    store: FeatureStore, orders: pd.DataFrame, chunk_size: int = 5000
+) -> pd.DataFrame:
+    """Point-in-time seller features as of each order's approval; row order preserved.
+
+    Feast's file (dask) store joins every entity row to every snapshot of its seller inside the
+    ttl before filtering (~18M rows for the full dataset; OOM in a 2 GB container), so the entity
+    frame is joined in approval-time-sorted chunks, which also narrows each chunk's source scan.
+    """
     entity = pd.DataFrame(
         {
             "order_id": orders["order_id"].to_numpy(),
@@ -78,10 +85,16 @@ def historical_seller_features(store: FeatureStore, orders: pd.DataFrame) -> pd.
                 orders["order_approved_ts_utc"], utc=True
             ).reset_index(drop=True),
         }
+    ).sort_values("event_timestamp", kind="stable")
+    features = [f"{SELLER_VIEW}:{c}" for c in SELLER_FEATURES]
+    joined = pd.concat(
+        [
+            store.get_historical_features(
+                entity_df=entity.iloc[i : i + chunk_size], features=features
+            ).to_df()
+            for i in range(0, len(entity), chunk_size)
+        ]
     )
-    joined = store.get_historical_features(
-        entity_df=entity, features=[f"{SELLER_VIEW}:{c}" for c in SELLER_FEATURES]
-    ).to_df()
     joined = joined.drop_duplicates("order_id").set_index("order_id")
     out = joined.reindex(orders["order_id"])[SELLER_FEATURES].astype("float64")
     return out.reset_index()
