@@ -24,16 +24,24 @@ uv run --project ml retail-ml monitor late_delivery                # exit 3 on d
 | `GIT_SHA` | `git rev-parse HEAD` | lineage tag when the image has no `.git` |
 | `DRIFT_SHARE_THRESHOLD` | `0.3` | monitor: breach when the share of drifted features exceeds it |
 | `MONITORING_REPORT_ROOT` | `s3://lakehouse/monitoring` | monitor: Evidently HTML at `<root>/late_delivery/<date>.html`; `s3://` via `MINIO_ENDPOINT` + `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD` (else the `AWS_*` chain), `file://` or a path writes locally |
+| `MIN_CURRENT_ROWS` | `30` | monitor: smaller current window → drift recorded, not gated |
+| `MIN_LABELLED` / `MIN_POSITIVES` | `100` / `10` | monitor: support a delayed-ground-truth week needs for its PR-AUC to gate |
+| `REFERENCE_SAMPLE_ROWS` | `10000` | monitor: seeded sample of the training window used as reference |
 
 Monitoring (`retail-ml monitor late_delivery`): the data is historical, so "now" is the latest
 approval among the scored orders in `pred_late_delivery.parquet`, and the current window is the
-scored orders approved in `(now − 7 d, now]`. Reference = the champion's training window
-(approved < validation start) rebuilt from the training Parquet + Feast and scored by the champion.
+scored orders approved in `(now − 7 d, now]`. Reference = a seeded sample of the champion's training
+window (approved < validation start) rebuilt from the training Parquet + Feast and scored by the
+champion — in-sample scores, so `prediction_drift` is biased towards drift and only reported.
 Drift uses KS / chi-square (p < 0.05) per feature — Evidently's default distance tests flag noise at
-a ~50-row window. Delayed ground truth = scored orders that now have `is_late`, per approval week;
-breach when the latest week's PR-AUC < champion `test_pr_auc` − 0.05. Rows (`run_ts, metric, value,
-window`) are appended to `GOLD_DIR/ml/ml_monitoring.parquet`; an empty current window exits 0 with a
-warning.
+a ~50-row window; categorical levels under 5 % of the reference are pooled as `__other__`. With 16
+features at p < 0.05, `drift_share > 0.3` needs ≥ 5 drifted columns (≈ 0.1 % by chance if
+independent). Delayed ground truth = scored orders that now have `is_late`, per approval week; breach
+when the latest week with ≥ `MIN_LABELLED` labels and ≥ `MIN_POSITIVES` positives has PR-AUC <
+champion `test_pr_auc` − 0.05 (smaller or single-class weeks are recorded, not gated). Rows
+(`run_ts, metric, value, window`) are appended to `GOLD_DIR/ml/ml_monitoring.parquet` and the breach
+decided before the report upload; a failed upload logs and records `report_uploaded = 0`. An empty
+current window exits 0 with a warning.
 
 Model `late_delivery` is one pyfunc: raw contract columns + the three `seller_*_90d` features in,
 P(late) out (`order_features` runs inside). Shape inputs with

@@ -22,6 +22,10 @@ DRIFT_FEATURES = DRIFT_NUMERIC + CATEGORICAL
 # p-value tests (drift at p < 0.05) account for the small 7-day window; Evidently's default for a
 # reference > 1000 rows (Wasserstein / Jensen-Shannon distance ≥ 0.1) is biased upward at n ≈ 50
 METHODS = {"num_method": "ks", "cat_method": "chisquare"}
+# chi-square is unreliable with sparse cells: levels under 5 % of the reference (and levels unseen
+# in it) are pooled, so a new dominant level still shows up as a shift in OTHER's share
+OTHER = "__other__"
+MIN_CATEGORY_SHARE = 0.05
 
 
 def drift_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -35,8 +39,25 @@ def drift_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out[[*DRIFT_FEATURES, PREDICTION]]
 
 
+def collapse_rare(
+    reference: pd.DataFrame, current: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Categoricals: levels below `MIN_CATEGORY_SHARE` of the reference → `OTHER` (copies)."""
+    reference, current = reference.copy(), current.copy()
+    for col in CATEGORICAL:
+        share = reference[col].value_counts(normalize=True)
+        keep = share.index[share >= MIN_CATEGORY_SHARE]
+        reference[col] = reference[col].where(reference[col].isin(keep), OTHER)
+        current[col] = current[col].where(current[col].isin(keep), OTHER)
+    return reference, current
+
+
 def drift_report(reference: pd.DataFrame, current: pd.DataFrame) -> tuple[dict[str, float], str]:
-    """`drift_share` over the features, `prediction_drift` (1.0 = P(late) drifted) and the HTML."""
+    """`drift_share` over the features, `prediction_drift` (1.0 = P(late) drifted) and the HTML.
+
+    `prediction_drift` compares served scores with the champion's *in-sample* scores on its own
+    training window, so it is biased towards drift; it is reported, never a breach condition."""
+    ref, cur = collapse_rare(drift_frame(reference), drift_frame(current))
     definition = DataDefinition(
         numerical_columns=[*DRIFT_NUMERIC, PREDICTION], categorical_columns=CATEGORICAL
     )
@@ -51,8 +72,8 @@ def drift_report(reference: pd.DataFrame, current: pd.DataFrame) -> tuple[dict[s
         ]
     )
     snapshot = report.run(
-        Dataset.from_pandas(drift_frame(current), data_definition=definition),
-        Dataset.from_pandas(drift_frame(reference), data_definition=definition),
+        Dataset.from_pandas(cur, data_definition=definition),
+        Dataset.from_pandas(ref, data_definition=definition),
     )
 
     def share(metric: DriftedColumnsCount) -> float:
