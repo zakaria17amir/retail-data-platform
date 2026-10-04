@@ -1,0 +1,23 @@
+select
+    order_id,
+    customer_id,
+    order_status,
+    _source_lsn,
+    _source_ts,
+    _is_deleted,
+    order_purchase_ts_local,
+    order_purchase_ts_utc,
+    order_approved_ts_local,
+    order_approved_ts_utc,
+    order_delivered_carrier_ts_local,
+    order_delivered_carrier_ts_utc,
+    order_delivered_customer_ts_local,
+    order_delivered_customer_ts_utc,
+    order_estimated_delivery_ts_local,
+    order_estimated_delivery_ts_utc,
+    flag_approved_before_purchase,
+    flag_carrier_before_approved,
+    flag_delivered_before_carrier,
+    flag_delivered_before_purchase,
+    _silver_loaded_at
+from {{ source('silver', 'orders') }}

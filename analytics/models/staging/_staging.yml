@@ -1,0 +1,90 @@
+models:
+  - name: stg_categories
+    description: One row per product category (silver catalog/categories), `_run_id` dropped.
+    columns:
+      - name: product_category_name
+        data_tests: [not_null, unique]
+
+  - name: stg_products
+    description: SCD2 product versions (silver catalog/products), `_run_id` dropped.
+    columns:
+      - name: product_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                where: is_current
+
+  - name: stg_customers
+    description: SCD2 customer versions (silver party/customers), `_run_id` dropped.
+    columns:
+      - name: customer_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                where: is_current
+
+  - name: stg_sellers
+    description: SCD2 seller versions (silver party/sellers), `_run_id` dropped.
+    columns:
+      - name: seller_id
+        data_tests:
+          - not_null
+          - unique:
+              config:
+                where: is_current
+
+  - name: stg_geolocation_points
+    description: Geolocation points (silver geo/geolocation_points), `_run_id` dropped.
+    columns:
+      - name: geolocation_pk
+        data_tests: [not_null, unique]
+
+  - name: stg_zip_centroids
+    description: One centroid per zip code prefix (silver geo/zip_centroids).
+    columns:
+      - name: zip_code_prefix
+        data_tests: [not_null, unique]
+
+  - name: stg_orders
+    description: One row per order (silver sales/orders), `_run_id` dropped.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+
+  - name: stg_order_items
+    description: One row per order item unit (silver sales/order_items), `_run_id` dropped.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, order_item_id]
+    columns:
+      - name: order_id
+        data_tests: [not_null]
+      - name: order_item_id
+        data_tests: [not_null]
+
+  - name: stg_order_payments
+    description: One row per order payment (silver sales/order_payments), `_run_id` dropped.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_id, payment_sequential]
+    columns:
+      - name: order_id
+        data_tests: [not_null]
+      - name: payment_sequential
+        data_tests: [not_null]
+
+  - name: stg_order_reviews
+    description: One row per review record (silver sales/order_reviews), `_run_id` dropped.
+    columns:
+      - name: review_pk
+        data_tests: [not_null, unique]
+
+  - name: stg_clickstream
+    description: One row per clickstream event (silver events/clickstream), `_run_id` dropped.
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]

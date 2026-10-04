@@ -8,6 +8,7 @@ COPY ingestion/clickstream_sim ingestion/clickstream_sim
 COPY ingestion/replayer/pyproject.toml ingestion/replayer/pyproject.toml
 COPY lakehouse/spark/pyproject.toml lakehouse/spark/pyproject.toml
 COPY lakehouse/quality/pyproject.toml lakehouse/quality/pyproject.toml
+COPY analytics/pyproject.toml analytics/pyproject.toml
 COPY ingestion/schemas ingestion/schemas
 RUN uv sync --locked --no-dev --package clickstream-sim
 
