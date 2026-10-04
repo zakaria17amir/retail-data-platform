@@ -90,13 +90,18 @@ online store and candidates (`docker compose exec redis redis-cli dbsize` before
 ## E2E test
 
 ```sh
-ALLOW_RESEED=1 uv run pytest -m realtime tests/integration -rP   # both profiles up
+ALLOW_RESEED=1 make test-realtime   # both profiles up
 ```
 
-Writes test rows to the stack: a session through Kafka → bronze → Feast (asserts `/recommend` reranks)
-and an `approved` transition → `ml.order_risk` (≤ 20 s targets), then deletes the order rows. Without
-`ALLOW_RESEED=1`, or with feast-server / serving unreachable, it skips. CI runs it in the ingest job
-on the sample data. Measured approve → `order_risk`: 0.52 s and 1.28 s (two runs).
+Writes test rows to the stack: a session through Kafka → bronze → Feast (asserts `/recommend` reranks;
+target 45 s) and an `approved` transition → `ml.order_risk` (target 20 s), then deletes the order rows.
+Without `ALLOW_RESEED=1`, or with feast-server / serving unreachable, it skips. CI runs it in the ingest
+job on the sample data. Measured approve → `order_risk`: 0.52 s (scorer 143 ms); session → Feast with
+all events counted: 20.4 s (first row 9.7 s). Bronze writes each event type's Delta table in turn
+(~20 s per micro-batch); writing them in parallel is the next latency lever.
+
+If the host is overloaded (long Spark tests, image builds), Redpanda can stall and the Debezium
+connector drop to `UNASSIGNED`; `docker compose --profile ingest restart kafka-connect` recovers it.
 
 ## Known limits
 
