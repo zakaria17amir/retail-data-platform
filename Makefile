@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -110,3 +110,7 @@ ml-build:
 
 ml:
 	GIT_SHA=$$(git rev-parse --short HEAD) docker compose --profile ml run --rm --build ml-cli $(ARGS)
+
+# /recommend p95 target < 50 ms at 20 users; needs `make up PROFILE=realtime` and published candidates
+recommend-load:
+	uv run --project ml locust -f ml/locustfile_recommend.py --headless -u 20 -r 5 -t 60s --host http://127.0.0.1:$${SERVING_PORT:-8000}
