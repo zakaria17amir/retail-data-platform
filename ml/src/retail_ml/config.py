@@ -50,6 +50,12 @@ def redis_connection() -> str:
     return ",".join(parts)
 
 
+def redis_url() -> str:
+    """REDIS_URL for redis-py; a Feast-style `host:port[,opts]` keeps only `host:port`."""
+    raw = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
+    return raw if "://" in raw else f"redis://{raw.split(',')[0]}"
+
+
 PROMOTION_MODES = ("auto", "manual")
 
 
