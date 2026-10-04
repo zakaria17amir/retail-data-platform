@@ -3,6 +3,7 @@ from history that is known at the cutoff. Pure functions over the `demand_daily`
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -13,6 +14,7 @@ HORIZON = 28
 LAGS = (28, 35, 42, 56)
 ROLLING = (7, 28)
 KEYS = ["product_category", "customer_state"]
+logger = logging.getLogger(__name__)
 FEATURES = [
     *(f"lag_{k}" for k in LAGS),
     *(f"rmean_{w}_lag_{HORIZON}" for w in ROLLING),
@@ -60,12 +62,15 @@ def demand_features(df: pd.DataFrame, vocabulary: Mapping[str, Sequence[str]]) -
 
 def seasonal_naive(df: pd.DataFrame, cutoff: pd.Timestamp) -> pd.Series:
     """Baseline for days >= cutoff: y[t - 7 * ceil(h / 7)], h = days since cutoff + 1, i.e. the last
-    observed week repeated. Only reads days < cutoff; NaN for rows before the cutoff."""
+    observed week repeated. Only reads days < cutoff; NaN for rows before the cutoff. Source days
+    before a series' first date count as 0 (series are zero-filled from their first order)."""
     date = pd.to_datetime(df["date"])
     h = (date - cutoff).dt.days + 1
     source = date - pd.to_timedelta(7 * np.ceil(h / 7), unit="D")
     observed = pd.to_numeric(df["orders"], errors="coerce").where(date < cutoff)
     value = _lookup(df, source, observed)
+    first = date.groupby([df[k].astype(str) for k in KEYS]).transform("min")
+    value = np.where(source < first, 0.0, value)
     return pd.Series(np.where(h >= 1, value, np.nan), index=df.index)
 
 
@@ -80,6 +85,10 @@ def window(df: pd.DataFrame, cutoff: pd.Timestamp, horizon: int = HORIZON) -> pd
 
 def wape(actual: Any, forecast: Any) -> float:
     a, f = np.asarray(actual, dtype=float), np.asarray(forecast, dtype=float)
+    ok = ~(np.isnan(a) | np.isnan(f))
+    if not ok.all():
+        logger.warning("wape: dropped %d of %d pairs with NaN", (~ok).sum(), ok.size)
+        a, f = a[ok], f[ok]
     total = a.sum()
     return float(np.abs(a - f).sum() / total) if total > 0 else float("nan")
 

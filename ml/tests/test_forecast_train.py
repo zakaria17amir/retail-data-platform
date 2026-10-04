@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from retail_ml.forecast.features import HORIZON
 from retail_ml.forecast.predict import OUTPUT_COLUMNS, forecast_demand
 from retail_ml.forecast.train import (
     DemandForecastConfig,
+    SeasonalNaiveModel,
+    _metrics,
     load_demand_forecast_config,
     promote_forecast,
     train,
@@ -83,6 +86,37 @@ def _runs() -> list[Any]:
     exp = client.get_experiment_by_name("demand_forecast")
     assert exp is not None
     return list(client.search_runs([exp.experiment_id], order_by=["attributes.start_time ASC"]))
+
+
+def test_baseline_wape_is_finite_on_every_fold_with_a_late_starting_series(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    rng = np.random.default_rng(0)
+    frames = []
+    for cat, start in [
+        ("early", END - pd.Timedelta(days=400)),
+        ("late", CUTOFF - pd.Timedelta(days=90)),
+    ]:
+        dates = pd.date_range(start, END, freq="D")
+        frames.append(
+            pd.DataFrame(
+                {
+                    "date": dates,
+                    "product_category": cat,
+                    "customer_state": "SP",
+                    "orders": rng.poisson(5, len(dates)).astype(float),
+                }
+            )
+        )
+    df = pd.concat(frames, ignore_index=True)
+    folds = [CUTOFF - pd.Timedelta(days=HORIZON * k) for k in (3, 2, 1)]
+    top = [("early", "SP"), ("late", "SP")]
+    with caplog.at_level(logging.WARNING, logger="retail_ml.forecast.features"):
+        m = _metrics(
+            SeasonalNaiveModel(), df, folds, CUTOFF, top, 10, lambda _: SeasonalNaiveModel()
+        )
+    assert all(np.isfinite(v) for v in m.values()), m
+    assert "dropped" not in caplog.text
 
 
 def test_config_paths_follow_gold_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,6 +279,16 @@ def test_promote_better_replaces_worse_and_nan_or_negative_blocks(
         d = promote_forecast(client, STUB_NAME, v, frame, actual)
         assert not d.promoted and failure in d.reason
     assert _aliases()["champion"] == good
+
+
+def test_promote_blocks_a_non_finite_score_even_without_champion(
+    mlflow_uri: str, stub_window: Any
+) -> None:
+    frame, actual, truth = stub_window
+    v = _register(Stub(truth, 1.0, 0.0))
+    d = promote_forecast(MlflowClient(), STUB_NAME, v, frame, actual * 0.0)
+    assert not d.promoted and "wape" in d.reason
+    assert _aliases() == {"challenger": v}
 
 
 def test_promote_manual_mode_sets_challenger_only(

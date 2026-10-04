@@ -16,15 +16,15 @@ from mlflow import MlflowClient
 
 from retail_ml.data import historical_seller_features
 from retail_ml.features import SELLER_FEATURES
-from retail_ml.late_delivery.promote import _champion_version
+from retail_ml.late_delivery.promote import champion_version
 from retail_ml.late_delivery.train import model_inputs
 
-CLOSED_STATUSES = ("canceled", "unavailable")
+CLOSED_STATUSES = ("canceled", "unavailable", "delivered")
 OUTPUT_COLUMNS = ["order_id", "probability", "model_version", "scored_ts"]
 
 
 def open_orders(df: pd.DataFrame) -> pd.DataFrame:
-    """Approved (every contract row is), not delivered, not canceled/unavailable."""
+    """Approved (every contract row is), no delivery timestamp, status not closed."""
     is_open = df["order_delivered_customer_ts_utc"].isna() & ~df["order_status"].isin(
         CLOSED_STATUSES
     )
@@ -38,7 +38,7 @@ def score(
     name: str = "late_delivery",
     now: pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    version = _champion_version(client, name)
+    version = champion_version(client, name)
     if version is None:
         raise RuntimeError(f"no champion for {name}: run `retail-ml train {name}` first")
     scored_ts = pd.Timestamp.now(tz="UTC") if now is None else now

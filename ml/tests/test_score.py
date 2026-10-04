@@ -56,6 +56,7 @@ def setup(tmp_path_factory: pytest.TempPathFactory) -> Any:
     open_ids = raw.loc[raw["order_delivered_customer_ts_utc"].isna(), "order_id"].tolist()
     raw.loc[raw["order_id"] == open_ids[0], "order_status"] = "canceled"
     raw.loc[raw["order_id"] == open_ids[1], "order_status"] = "unavailable"
+    raw.loc[raw["order_id"] == open_ids[2], "order_status"] = "delivered"  # no delivery ts
     raw.to_parquet(path, index=False)
     store = local_store(tmp_path)
     labelled = read_training(path)
@@ -77,7 +78,7 @@ def setup(tmp_path_factory: pytest.TempPathFactory) -> Any:
         "raw": raw,
         "lgbm": lgbm,
         "champion": champion,
-        "excluded": set(open_ids[:2]),
+        "excluded": set(open_ids[:3]),
     }
     mp.undo()
 

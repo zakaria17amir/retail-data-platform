@@ -10,7 +10,7 @@ from mlflow import MlflowClient
 
 from retail_ml.forecast.features import HORIZON, KEYS, modelled_series, window
 from retail_ml.forecast.train import DemandForecastConfig, model_inputs, read_demand
-from retail_ml.late_delivery.promote import _champion_version
+from retail_ml.late_delivery.promote import champion_version
 
 OUTPUT_COLUMNS = [
     "date",
@@ -36,7 +36,7 @@ def forecast_demand(
     cfg: DemandForecastConfig, client: MlflowClient, now: pd.Timestamp | None = None
 ) -> pd.DataFrame:
     name = cfg.registered_model
-    version = _champion_version(client, name)
+    version = champion_version(client, name)
     if version is None:
         raise RuntimeError(f"no champion for {name}: run `retail-ml train {name}` first")
     model = mlflow.pyfunc.load_model(f"models:/{name}/{version}")

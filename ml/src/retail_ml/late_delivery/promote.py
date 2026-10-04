@@ -35,7 +35,7 @@ def _predict(uri: str, X: pd.DataFrame) -> Any:
     return np.asarray(mlflow.pyfunc.load_model(uri).predict(X), dtype=float)
 
 
-def _champion_version(client: MlflowClient, name: str) -> str | None:
+def champion_version(client: MlflowClient, name: str) -> str | None:
     try:
         return str(client.get_model_version_by_alias(name, CHAMPION).version)
     except MlflowException:
@@ -67,7 +67,7 @@ def promote(
         return Decision(False, "model tests failed: " + "; ".join(failures), score, None)
 
     score = _score(y_test, p)
-    champion = _champion_version(client, name)
+    champion = champion_version(client, name)
     champion_score = None
     reason = "no champion"
     if champion is not None:

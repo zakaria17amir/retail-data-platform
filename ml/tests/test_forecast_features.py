@@ -1,3 +1,5 @@
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -103,6 +105,19 @@ def test_seasonal_naive_repeats_the_last_observed_week_over_the_horizon() -> Non
     assert (a[0], a[7], a[27]) == (hist[14], hist[14], hist[20])
 
 
+def test_seasonal_naive_counts_days_before_a_series_start_as_zero() -> None:
+    cutoff = pd.Timestamp("2018-01-22")
+    df = pd.concat(
+        [
+            _series("a", "SP", [*np.arange(1, 22), *[np.nan] * 28]),
+            _series("b", "RJ", [4.0, 4.0, 4.0, *[np.nan] * 28], start="2018-01-19"),
+        ]
+    ).reset_index(drop=True)
+    f = seasonal_naive(df, cutoff)
+    b = f[(df["date"] >= cutoff) & (df["product_category"] == "b")].to_numpy()
+    np.testing.assert_array_equal(b, np.tile([0, 0, 0, 0, 4, 4, 4], 4))
+
+
 def test_window_masks_actuals_from_the_cutoff_and_ends_after_the_horizon() -> None:
     df = _series("a", "SP", np.arange(100, dtype=float))
     cutoff = pd.Timestamp("2018-02-01")
@@ -116,6 +131,13 @@ def test_window_masks_actuals_from_the_cutoff_and_ends_after_the_horizon() -> No
 def test_wape() -> None:
     assert wape(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0, 6.0])) == pytest.approx(0.5)
     assert np.isnan(wape(np.zeros(3), np.ones(3)))
+
+
+def test_wape_drops_nan_pairs_and_logs_the_count(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="retail_ml.forecast.features"):
+        value = wape(np.array([1.0, 2.0, np.nan]), np.array([1.5, np.nan, 3.0]))
+    assert value == pytest.approx(0.5)
+    assert "2 of 3" in caplog.text
 
 
 def test_modelled_series_reports_the_excluded_ones() -> None:

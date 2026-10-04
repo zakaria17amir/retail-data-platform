@@ -31,7 +31,7 @@ from retail_ml.forecast.features import (
     wape,
     window,
 )
-from retail_ml.late_delivery.promote import CHALLENGER, _champion_version, approve
+from retail_ml.late_delivery.promote import CHALLENGER, approve, champion_version
 from retail_ml.late_delivery.train import git_sha
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[3] / "configs" / "demand_forecast.yaml"
@@ -127,10 +127,13 @@ def _load(name: str, version: str) -> Any:
     return mlflow.pyfunc.load_model(f"models:/{name}/{version}")
 
 
-def forecast_test_failures(p: np.ndarray) -> list[str]:
+def forecast_test_failures(p: np.ndarray, score: float) -> list[str]:
     if np.isnan(p).any():
         return ["nan forecasts"]
-    return ["negative forecasts"] if (p < 0).any() else []
+    failures = ["negative forecasts"] if (p < 0).any() else []
+    if not np.isfinite(score):
+        failures.append(f"non-finite wape {score}")
+    return failures
 
 
 def promote_forecast(
@@ -148,10 +151,10 @@ def promote_forecast(
     client.set_registered_model_alias(name, CHALLENGER, version)
     p = _horizon_forecast(_load(name, version).predict, frame, actual)
     score = wape(actual, p)
-    if failures := forecast_test_failures(p):
+    if failures := forecast_test_failures(p, score):
         return ForecastDecision(False, "model tests failed: " + "; ".join(failures), score, None)
 
-    champion = _champion_version(client, name)
+    champion = champion_version(client, name)
     champion_score = None
     reason = "no champion"
     if champion is not None:
