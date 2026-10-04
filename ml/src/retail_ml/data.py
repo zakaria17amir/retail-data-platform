@@ -26,6 +26,12 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def frame_sha256(df: pd.DataFrame, key: str) -> str:
+    """Content hash of a frame, independent of row order (rows sorted by `key`)."""
+    rows = pd.util.hash_pandas_object(df.sort_values(key, kind="stable"), index=False)
+    return hashlib.sha256(rows.to_numpy().tobytes()).hexdigest()
+
+
 def read_training(path: Path) -> pd.DataFrame:
     """Labelled (delivered) rows of the late-delivery contract."""
     df = pd.read_parquet(path)

@@ -22,7 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from retail_ml.config import LateDeliveryConfig
-from retail_ml.data import historical_seller_features, read_training, sha256_file
+from retail_ml.data import frame_sha256, historical_seller_features, read_training, sha256_file
 from retail_ml.features import CATEGORICAL, NUMERIC, SELLER_FEATURES, OrderFeatures
 from retail_ml.late_delivery.evaluate import classification_metrics
 from retail_ml.late_delivery.promote import Decision, promote
@@ -143,11 +143,16 @@ def train(
     cfg: LateDeliveryConfig, store: FeatureStore, promotion_mode: str = "auto"
 ) -> TrainResult:
     df = read_training(cfg.training_path)
-    df = pd.concat([df, historical_seller_features(store, df)[SELLER_FEATURES]], axis=1)
+    seller = historical_seller_features(store, df)
+    df = pd.concat([df, seller[SELLER_FEATURES]], axis=1)
     parts = split(df, cfg)
     X = {name: model_inputs(part) for name, part in parts.items()}
     y = {name: part[LABEL].astype(int) for name, part in parts.items()}
-    lineage = {"data_sha256": sha256_file(cfg.training_path), "git_sha": git_sha()}
+    lineage = {
+        "data_sha256": sha256_file(cfg.training_path),
+        "features_sha256": frame_sha256(seller, "order_id"),
+        "git_sha": git_sha(),
+    }
     common = {
         **{f"n_{name}": len(part) for name, part in parts.items()},
         "validation_start": cfg.validation_start.date().isoformat(),
@@ -158,7 +163,7 @@ def train(
     mlflow.set_experiment(cfg.experiment)
     run_ids: dict[str, str] = {}
     metrics: dict[str, dict[str, float]] = {}
-    model_uri = ""
+    model_uris: dict[str, str] = {}
     candidates: list[tuple[str, dict[str, Any]]] = [
         ("constant_prior", {}),
         ("logistic", cfg.logistic),
@@ -191,13 +196,10 @@ def train(
                 signature=infer_signature(example, model.predict(None, example)),
                 input_example=example,
             )
-        run_ids[model_type], metrics[model_type], model_uri = (
-            run.info.run_id,
-            scores,
-            info.model_uri,
-        )
+        run_ids[model_type], metrics[model_type] = run.info.run_id, scores
+        model_uris[model_type] = info.model_uri
 
-    version = str(mlflow.register_model(model_uri, cfg.registered_model).version)
+    version = str(mlflow.register_model(model_uris["lightgbm"], cfg.registered_model).version)
     decision = promote(
         MlflowClient(),
         cfg.registered_model,

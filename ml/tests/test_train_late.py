@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import mlflow
@@ -8,10 +9,10 @@ from conftest import local_store, raw_order, synthetic_gold
 from mlflow import MlflowClient
 
 from retail_ml.config import load_late_delivery_config
-from retail_ml.data import sha256_file
+from retail_ml.data import frame_sha256, sha256_file
 from retail_ml.features import SELLER_FEATURES
 from retail_ml.late_delivery.evaluate import classification_metrics
-from retail_ml.late_delivery.train import model_inputs, train
+from retail_ml.late_delivery.train import model_inputs, split, train
 
 ROC_AUC_FLOOR = 0.80
 METRICS = ["pr_auc", "roc_auc", "brier", "recall_at_p50"]
@@ -52,6 +53,8 @@ def test_three_runs_logged_baselines_first_with_lineage(trained: dict[str, objec
     data_hash = sha256_file(trained["gold"] / "ml" / "late_delivery_training.parquet")  # type: ignore[operator]
     for r in runs:
         assert r.data.tags["data_sha256"] == data_hash
+        assert re.fullmatch(r"[0-9a-f]{64}", r.data.tags["features_sha256"])
+        assert r.data.tags["features_sha256"] == runs[0].data.tags["features_sha256"]
         assert r.data.tags["git_sha"]
         assert {f"{s}_{m}" for s in ("val", "test") for m in METRICS} <= set(r.data.metrics)
         assert int(r.data.params["n_train"]) > 0
@@ -78,6 +81,8 @@ def test_lightgbm_registered_as_challenger_and_first_promoted(trained: dict[str,
         k: str(v) for k, v in MlflowClient().get_registered_model("late_delivery").aliases.items()
     }
     assert aliases == {"challenger": "1", "champion": "1"}
+    version = MlflowClient().get_model_version("late_delivery", "1")
+    assert version.run_id == trained["result"].run_ids["lightgbm"]  # type: ignore[attr-defined]
 
 
 def test_registered_model_scores_raw_rows_with_unknowns(trained: dict[str, object]) -> None:
@@ -94,6 +99,29 @@ def test_registered_model_scores_raw_rows_with_unknowns(trained: dict[str, objec
     p = np.asarray(model.predict(model_inputs(rows)))
     assert p.shape == (3,)
     assert np.isfinite(p).all() and ((p >= 0) & (p <= 1)).all()
+
+
+def test_split_boundaries_are_half_open() -> None:
+    cfg = load_late_delivery_config()
+    stamps = [
+        "2018-02-28 23:59:59",
+        "2018-03-01 00:00:00",
+        "2018-05-31 23:59:59",
+        "2018-06-01 00:00:00",
+        "2018-08-31 23:59:59",
+        "2018-09-01 00:00:00",
+    ]
+    df = pd.DataFrame(
+        {"order_id": list("abcdef"), "order_approved_ts_utc": pd.to_datetime(stamps, utc=True)}
+    )
+    parts = {name: part["order_id"].tolist() for name, part in split(df, cfg).items()}
+    assert parts == {"train": ["a"], "val": ["b", "c"], "test": ["d", "e"]}
+
+
+def test_frame_sha256_is_order_independent_and_value_sensitive() -> None:
+    df = pd.DataFrame({"order_id": ["a", "b"], "x": [1.0, np.nan]})
+    assert frame_sha256(df, "order_id") == frame_sha256(df.iloc[::-1], "order_id")
+    assert frame_sha256(df, "order_id") != frame_sha256(df.assign(x=[1.0, 2.0]), "order_id")
 
 
 def test_config_paths_follow_gold_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

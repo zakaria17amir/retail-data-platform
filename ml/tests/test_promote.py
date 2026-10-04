@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 from mlflow import MlflowClient
 
+from retail_ml.config import promotion_mode
 from retail_ml.late_delivery.promote import approve, promote
 
 NAME = "late_delivery"
@@ -69,6 +70,61 @@ def test_better_challenger_replaces_champion(mlflow_uri: str, data: Any) -> None
     assert decision.promoted
     assert decision.challenger_pr_auc > (decision.champion_pr_auc or 0)
     assert _aliases(client)["champion"] == v2
+
+
+def test_pr_auc_tie_keeps_champion(mlflow_uri: str, data: Any) -> None:
+    client = MlflowClient()
+    v1 = _register(GOOD)
+    promote(client, NAME, v1, *data, baseline_brier=BASELINE_BRIER)
+    v2 = _register(Scorer(0.8, 0.1))
+    decision = promote(client, NAME, v2, *data, baseline_brier=BASELINE_BRIER)
+    assert decision.challenger_pr_auc == decision.champion_pr_auc
+    assert not decision.promoted
+    assert _aliases(client) == {"champion": v1, "challenger": v2}
+
+
+def test_unscorable_champion_is_replaced_by_passing_challenger(mlflow_uri: str, data: Any) -> None:
+    client = MlflowClient()
+    broken = _register(Scorer(0.8, 0.1, col="dropped_column"))
+    approve(client, NAME, broken)
+    v = _register(GOOD)
+    decision = promote(client, NAME, v, *data, baseline_brier=BASELINE_BRIER)
+    assert decision.promoted and decision.reason == "champion could not be scored"
+    assert decision.champion_pr_auc is None
+    assert _aliases(client)["champion"] == v
+
+
+def test_champion_not_scored_when_challenger_fails_model_tests(mlflow_uri: str, data: Any) -> None:
+    client = MlflowClient()
+    broken = _register(Scorer(0.8, 0.1, col="dropped_column"))
+    approve(client, NAME, broken)
+    v = _register(Scorer(0.8, 0.1, nan=True))
+    decision = promote(client, NAME, v, *data, baseline_brier=BASELINE_BRIER)
+    assert not decision.promoted and "nan" in decision.reason
+    assert decision.champion_pr_auc is None
+    assert _aliases(client)["champion"] == broken
+
+
+def test_promote_rejects_unknown_mode(mlflow_uri: str, data: Any) -> None:
+    with pytest.raises(ValueError, match="promotion mode"):
+        promote(MlflowClient(), NAME, "1", *data, baseline_brier=BASELINE_BRIER, mode="yolo")
+
+
+@pytest.mark.parametrize(("raw", "mode"), [(None, "auto"), ("", "auto"), (" Manual ", "manual")])
+def test_promotion_mode_from_env(
+    raw: str | None, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("PROMOTION_MODE", raising=False)
+    else:
+        monkeypatch.setenv("PROMOTION_MODE", raw)
+    assert promotion_mode() == mode
+
+
+def test_invalid_promotion_mode_env_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PROMOTION_MODE", "yolo")
+    with pytest.raises(ValueError, match="PROMOTION_MODE"):
+        promotion_mode()
 
 
 def test_worse_challenger_stays_challenger(mlflow_uri: str, data: Any) -> None:

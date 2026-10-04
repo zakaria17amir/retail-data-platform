@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import pandas as pd
 import yaml
@@ -28,12 +29,43 @@ def feast_registry_path() -> Path:
 
 
 def redis_connection() -> str:
-    """Feast wants `host:port[,opts]`; accept a `redis://host:port` URL too."""
-    return (os.environ.get("REDIS_URL") or "localhost:6379").removeprefix("redis://")
+    """REDIS_URL (`redis[s]://[user:pass@]host[:port][/db]` or Feast `host:port[,opts]`) as the
+    Feast connection string `host:port[,db=N][,ssl=true][,username=…][,password=…]`."""
+    raw = os.environ.get("REDIS_URL") or "localhost:6379"
+    if "://" not in raw:
+        return raw
+    url = urlsplit(raw)
+    parts = [f"{url.hostname or 'localhost'}:{url.port or 6379}"]
+    if db := url.path.strip("/"):
+        parts.append(f"db={int(db)}")
+    if url.scheme == "rediss":
+        parts.append("ssl=true")
+    if url.username:
+        parts.append(f"username={unquote(url.username)}")
+    if url.password:
+        password = unquote(url.password)
+        if "," in password:
+            raise ValueError("REDIS_URL password must not contain ',' (Feast option separator)")
+        parts.append(f"password={password}")
+    return ",".join(parts)
+
+
+PROMOTION_MODES = ("auto", "manual")
+
+
+def check_promotion_mode(mode: str) -> str:
+    mode = mode.strip().lower()
+    if mode not in PROMOTION_MODES:
+        raise ValueError(f"promotion mode must be one of {PROMOTION_MODES}, got {mode!r}")
+    return mode
 
 
 def promotion_mode() -> str:
-    return os.environ.get("PROMOTION_MODE") or "auto"
+    raw = os.environ.get("PROMOTION_MODE") or "auto"
+    try:
+        return check_promotion_mode(raw)
+    except ValueError as e:
+        raise ValueError(f"PROMOTION_MODE: {e}") from None
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,33 @@
 from pathlib import Path
 
 import pandas as pd
+import pytest
 from conftest import local_store
 
+from retail_ml.config import redis_connection
 from retail_ml.data import historical_seller_features, materialize
 from retail_ml.features import SELLER_FEATURES
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("redis://redis:6379/0", "redis:6379,db=0"),
+        ("redis://:s3cr%40t@redis:6380/2", "redis:6380,db=2,password=s3cr@t"),
+        ("redis://default:pw@redis", "redis:6379,username=default,password=pw"),
+        ("rediss://cache.example:6390", "cache.example:6390,ssl=true"),
+        ("redis:6379", "redis:6379"),
+        (None, "localhost:6379"),
+    ],
+)
+def test_redis_url_becomes_feast_connection_string(
+    url: str | None, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if url is None:
+        monkeypatch.delenv("REDIS_URL", raising=False)
+    else:
+        monkeypatch.setenv("REDIS_URL", url)
+    assert redis_connection() == expected
 
 
 def _ts(s: str) -> pd.Timestamp:
