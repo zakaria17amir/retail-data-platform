@@ -29,6 +29,9 @@ RUN curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 -C - -o "$SPARK_HOME
 
 RUN pip install --no-cache-dir "pyspark==${SPARK_VERSION}" "delta-spark==${DELTA_VERSION}" pytest fastavro
 
+# applyInPandasWithState (realtime session features) needs pandas + Arrow on the driver and workers
+RUN pip install --no-cache-dir pandas==2.2.3 pyarrow==20.0.0 numpy==2.2.6
+
 COPY spark-defaults.conf /opt/spark-defaults.conf.template
 COPY entrypoint.sh /opt/lakehouse-entrypoint.sh
 RUN chmod +x /opt/lakehouse-entrypoint.sh && mkdir -p "$SPARK_HOME/conf" && chown -R spark:spark "$SPARK_HOME/conf"

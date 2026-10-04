@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from lakehouse_spark.realtime.app import missing_tables, read_events
+from lakehouse_spark.realtime.app import events_path, missing_tables, read_events
 from pyspark.sql import DataFrame, SparkSession
 
 pytestmark = pytest.mark.spark
@@ -21,7 +21,8 @@ def _bronze(spark: SparkSession, root: str, event_type: str, rows: list[tuple[An
 
 def test_missing_tables_lists_types_without_a_bronze_table(spark: SparkSession, root: str) -> None:
     _bronze(spark, root, "page_view", [])
-    assert missing_tables(spark, root, ("page_view", "add_to_cart")) == ["add_to_cart"]
+    paths = [events_path(root, t) for t in ("page_view", "add_to_cart")]
+    assert missing_tables(spark, paths) == [events_path(root, "add_to_cart")]
 
 
 def test_read_events_unions_types_and_parses_dataset_time(spark: SparkSession, root: str) -> None:
