@@ -482,15 +482,25 @@ services:
     image: retail-ml
     # image ENTRYPOINT is retail-ml (DockerOperator, ml-cli); reset so the command can be uvicorn
     entrypoint: []
-    command: ["uvicorn", "retail_ml.serving.app:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment: &ml-env
-      MLFLOW_TRACKING_URI: http://mlflow:5000
-      REDIS_URL: redis://redis:6379/0
-      FEAST_REPO_PATH: /feature_repo
-      FEAST_REGISTRY_PATH: /data/feast/registry.db
-      GOLD_DIR: /data/gold
-      PROMOTION_MODE: ${PROMOTION_MODE:-auto}
-      GIT_SHA: ${GIT_SHA:-unknown}
+    # 4 workers share Prometheus mmap files; a restart must not inherit a dead worker's counters
+    command:
+      - sh
+      - -ec
+      - >-
+        rm -rf "$$PROMETHEUS_MULTIPROC_DIR" && mkdir -p "$$PROMETHEUS_MULTIPROC_DIR" &&
+        exec uvicorn retail_ml.serving.app:app --host 0.0.0.0 --port 8000 --workers 4
+    environment:
+      <<: &ml-env
+        MLFLOW_TRACKING_URI: http://mlflow:5000
+        REDIS_URL: redis://redis:6379/0
+        FEAST_REPO_PATH: /feature_repo
+        FEAST_REGISTRY_PATH: /data/feast/registry.db
+        GOLD_DIR: /data/gold
+        PROMOTION_MODE: ${PROMOTION_MODE:-auto}
+        GIT_SHA: ${GIT_SHA:-unknown}
+      # serving only (not ml-cli): Feast reads the first, prometheus_client the second
+      PROMETHEUS_MULTIPROCESS_DIR: /tmp/prometheus
+      PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
     ports:
       - "127.0.0.1:${SERVING_PORT:-8000}:8000"
     volumes:
@@ -513,7 +523,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1g
+          memory: 1536m  # 4 workers ≈ 0.9 GiB idle (≈ 230 MiB each)
     networks: [retail]
 
   ml-cli:

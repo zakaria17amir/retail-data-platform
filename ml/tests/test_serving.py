@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
+import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,7 @@ from retail_ml.serving.model import (
     load_champion,
     load_seller_lookup,
     seller_lookup,
+    single_threaded,
 )
 
 PREDICT = "/predict/late-delivery"
@@ -229,8 +233,8 @@ def _samples(text: str) -> dict[tuple[str, frozenset[tuple[str, str]]], float]:
 
 
 def test_metrics_exposed_with_contract_names(client: TestClient) -> None:
-    # `import feast` switches prometheus_client to multiprocess (mmap) values, shared by every
-    # app in this process, so assert deltas (after one warm-up call creates each labelled child)
+    # multiprocess (mmap) values are shared by every app in this process, so assert deltas
+    # (after one warm-up call creates each labelled child)
     def calls() -> None:
         client.post(PREDICT, json=PAYLOAD)
         client.post(PREDICT, json={**PAYLOAD, "is_late": True})
@@ -256,6 +260,7 @@ def test_metrics_exposed_with_contract_names(client: TestClient) -> None:
     assert "# TYPE prediction_probability histogram" in text
     assert delta("prediction_probability_bucket", le="0.4") == 0
     assert delta("prediction_probability_bucket", le="0.45") == 1
+    assert "# TYPE model_version_info gauge" in text
     assert 'model_version_info{version="3"} 1.0' in text
     les = [
         line.split('le="')[1].split('"')[0]
@@ -279,7 +284,34 @@ def test_reload_swaps_version() -> None:
         assert c.post(PREDICT, json=PAYLOAD).json() == {"probability": 0.9, "model_version": "2"}
         text = c.get("/metrics").text
     assert 'model_version_info{version="2"} 1.0' in text
-    assert 'version="1"' not in text
+    assert 'model_version_info{version="1"} 0.0' in text
+
+
+def test_metrics_aggregate_other_worker_processes(client: TestClient) -> None:
+    # uvicorn --workers: each worker writes its own mmap files; /metrics must sum all of them
+    def other_workers() -> float:
+        key = ("requests_total", frozenset({("route", "/other-worker"), ("status", "200")}))
+        return _samples(client.get("/metrics").text).get(key, 0.0)
+
+    before = other_workers()
+    worker = (
+        "from prometheus_client import Counter, Gauge;"
+        "Counter('requests_total', 'h', ['route', 'status']).labels('/other-worker', '200').inc(5);"
+        "Gauge('model_version_info', 'h', ['version'], multiprocess_mode='max')"
+        ".labels('other').set(1)"
+    )
+    subprocess.run([sys.executable, "-c", worker], check=True, env=os.environ)
+    assert other_workers() - before == 5
+    assert 'model_version_info{version="other"} 1.0' in client.get("/metrics").text
+
+
+def test_champion_predicts_single_threaded_with_unchanged_output(real_pyfunc: Any) -> None:
+    lgbm = real_pyfunc.unwrap_python_model().pipeline.named_steps["model"]
+    X = model_inputs(pd.DataFrame([{**PAYLOAD, **KNOWN}]))
+    expected = real_pyfunc.predict(X)
+    assert single_threaded(real_pyfunc) is real_pyfunc
+    assert lgbm.get_params()["n_jobs"] == 1
+    np.testing.assert_array_equal(real_pyfunc.predict(X), expected)
 
 
 def test_reload_failure_keeps_serving_current_model() -> None:

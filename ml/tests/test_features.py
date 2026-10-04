@@ -67,6 +67,22 @@ def test_unseen_category_maps_to_unknown_with_fixed_vocabulary() -> None:
     assert list(out["product_category"].cat.categories) == [*vocab["product_category"], UNKNOWN]
 
 
+def test_one_row_result_equals_its_row_of_the_multi_row_result() -> None:
+    df = pd.DataFrame(
+        [
+            raw_order(),
+            raw_order(order_id="o2", customer_state="RJ", payment_type=None, total_price=0.0),
+            raw_order(order_id="o3", product_category="brand_new", customer_lat=None),
+            raw_order(order_id="o4", seller_state=None, n_items=None),
+        ]
+    )
+    vocab = {col: ["RJ", "SP", "credit_card", "toys"] for col in CATEGORICAL}
+    many = order_features(df, vocab)
+    for i in range(len(df)):
+        one = order_features(df.iloc[[i]], vocab)
+        pd.testing.assert_frame_equal(one, many.iloc[[i]])
+
+
 def test_transformer_learns_vocabulary_and_handles_unknown_seller() -> None:
     train = pd.DataFrame([raw_order(), raw_order(order_id="o2", product_category="health_beauty")])
     for col in SELLER_FEATURES:

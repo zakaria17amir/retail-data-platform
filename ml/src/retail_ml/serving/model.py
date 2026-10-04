@@ -6,11 +6,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import lightgbm as lgb
 import mlflow
 import pandas as pd
 from feast import FeatureStore
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
+from mlflow.pyfunc import PyFuncModel
 
 from retail_ml import config
 from retail_ml.data import SELLER_VIEW, feature_store
@@ -51,7 +53,19 @@ def load_champion(name: str = MODEL_NAME) -> LoadedModel | None:
     if CHAMPION not in aliases:
         return None
     version = str(aliases[CHAMPION])
-    return LoadedModel(version, mlflow.pyfunc.load_model(f"models:/{name}/{version}"))
+    return LoadedModel(
+        version, single_threaded(mlflow.pyfunc.load_model(f"models:/{name}/{version}"))
+    )
+
+
+def single_threaded(model: PyFuncModel) -> PyFuncModel:
+    """One OpenMP thread per LightGBM predict: inputs are one row and the uvicorn workers are the
+    parallelism (n_jobs only sets prediction threads; the trees are unchanged)."""
+    python_model = model.unwrap_python_model()  # type: ignore[no-untyped-call]
+    for _, step in getattr(getattr(python_model, "pipeline", None), "steps", []):
+        if isinstance(step, lgb.LGBMModel):
+            step.set_params(n_jobs=1)
+    return model
 
 
 def seller_lookup(store: FeatureStore) -> SellerLookup:

@@ -81,8 +81,10 @@ def create_app(
     state = _State()
 
     def set_model(loaded: LoadedModel) -> None:
+        if state.model:
+            metrics.model_version.labels(state.model.version).set(0)
         state.model = loaded
-        metrics.model_version.info({"version": loaded.version})
+        metrics.model_version.labels(loaded.version).set(1)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

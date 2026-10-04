@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from functools import cache
 from typing import Any, Self
 
 import numpy as np
@@ -41,16 +42,29 @@ def haversine_km(lat1: Any, lng1: Any, lat2: Any, lng2: Any) -> Any:
     return 2 * EARTH_RADIUS_KM * np.arcsin(np.sqrt(a))
 
 
-def _num(df: pd.DataFrame, col: str) -> pd.Series:
-    return pd.to_numeric(df[col], errors="coerce").astype("float64")
+def _num(df: pd.DataFrame, col: str) -> np.ndarray[Any, np.dtype[np.float64]]:
+    return pd.to_numeric(df[col], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
 
 
-def _categorical(values: pd.Series, vocabulary: Sequence[str] | None) -> pd.Series:
-    s = values.astype("object").where(values.notna(), UNKNOWN).astype(str)
-    levels = sorted(set(s) - {UNKNOWN}) if vocabulary is None else list(vocabulary)
-    if vocabulary is not None:
-        s = s.where(s.isin(levels), UNKNOWN)
-    return pd.Series(pd.Categorical(s, categories=[*levels, UNKNOWN]), index=values.index)
+def _strings(values: pd.Series) -> tuple[pd.Index, np.ndarray[Any, Any]]:
+    """(values as str, null mask) without Series ops, so one-row frames stay cheap."""
+    raw = values.to_numpy(dtype=object)
+    return pd.Index(raw.astype(str)), pd.isna(raw)
+
+
+@cache
+def _dtype(levels: tuple[str, ...]) -> pd.CategoricalDtype:
+    return pd.CategoricalDtype([*levels, UNKNOWN])  # cached: its hash table is built once
+
+
+def _categorical(
+    strings: pd.Index, null: np.ndarray[Any, Any], vocabulary: Sequence[str] | None
+) -> pd.Categorical:
+    levels = sorted(set(strings[~null]) - {UNKNOWN}) if vocabulary is None else vocabulary
+    dtype = _dtype(tuple(levels))
+    codes = dtype.categories.get_indexer(strings)
+    codes[null | (codes < 0)] = len(levels)
+    return pd.Categorical.from_codes(codes, dtype=dtype)  # type: ignore[arg-type]
 
 
 def order_features(
@@ -61,29 +75,36 @@ def order_features(
     `vocabulary` fixes the category levels (values outside it become `UNKNOWN`);
     without it the levels are the observed values. `UNKNOWN` is always a level.
     """
-    approved = pd.to_datetime(df["order_approved_ts_utc"], utc=True)
-    estimated = pd.to_datetime(df["order_estimated_delivery_ts_utc"], utc=True)
+    approved = pd.DatetimeIndex(pd.to_datetime(df["order_approved_ts_utc"], utc=True))
+    estimated = pd.DatetimeIndex(pd.to_datetime(df["order_estimated_delivery_ts_utc"], utc=True))
     price, freight = _num(df, "total_price"), _num(df, "total_freight")
-    out = pd.DataFrame(index=df.index)
-    out["freight_ratio"] = freight / price.where(price != 0)
-    out["distance_km"] = haversine_km(
-        _num(df, "customer_lat"),
-        _num(df, "customer_lng"),
-        _num(df, "seller_lat"),
-        _num(df, "seller_lng"),
+    strings = {col: _strings(df[col]) for col in CATEGORICAL}
+    (customer, customer_null), (seller, seller_null) = (
+        strings["customer_state"],
+        strings["seller_state"],
     )
-    out["n_items"] = _num(df, "n_items")
-    out["n_sellers"] = _num(df, "n_sellers")
-    out["estimated_days"] = (estimated - approved).dt.total_seconds() / 86400
-    out["approve_hour"] = approved.dt.hour
-    out["approve_dow"] = approved.dt.dayofweek
-    out["approve_month"] = approved.dt.month
-    out["payment_installments"] = _num(df, "payment_installments")
-    for col in CATEGORICAL:
-        out[col] = _categorical(df[col], None if vocabulary is None else vocabulary[col])
-    same = df["customer_state"].notna() & (df["customer_state"] == df["seller_state"])
-    out["same_state"] = same.astype("int64")
-    return out[ORDER_FEATURES]
+    out = {
+        "freight_ratio": freight / np.where(price != 0, price, np.nan),
+        "distance_km": haversine_km(
+            _num(df, "customer_lat"),
+            _num(df, "customer_lng"),
+            _num(df, "seller_lat"),
+            _num(df, "seller_lng"),
+        ),
+        "n_items": _num(df, "n_items"),
+        "n_sellers": _num(df, "n_sellers"),
+        "estimated_days": (estimated - approved).total_seconds().to_numpy() / 86400,
+        "approve_hour": approved.hour.to_numpy(),
+        "approve_dow": approved.dayofweek.to_numpy(),
+        "approve_month": approved.month.to_numpy(),
+        "payment_installments": _num(df, "payment_installments"),
+        **{
+            col: _categorical(*strings[col], None if vocabulary is None else vocabulary[col])
+            for col in CATEGORICAL
+        },
+        "same_state": (~customer_null & ~seller_null & (customer == seller)).astype("int64"),
+    }
+    return pd.DataFrame({col: out[col] for col in ORDER_FEATURES}, index=df.index)
 
 
 class OrderFeatures(TransformerMixin, BaseEstimator):  # type: ignore[misc]
