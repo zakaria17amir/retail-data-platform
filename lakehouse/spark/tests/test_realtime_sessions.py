@@ -1,7 +1,7 @@
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -64,7 +64,7 @@ def _feature(
         "n_cart_adds": 0,
         "dwell_seconds": int((end - start).total_seconds()),
         "session_start_ts": start,
-        "event_ts": end,
+        "event_ts": end + timedelta(milliseconds=n_events),
     }
     return row | overrides
 
@@ -148,6 +148,42 @@ def test_late_event_inside_watermark_updates_its_session(spark: SparkSession, ro
         stream.append([("page_view", "s1", None, None, _ts(11, 0))])
         query.processAllAvailable()
     assert stream.batches[1:] == [[_feature("s1", _ts(12, 0), _ts(12, 20), 3)]]
+
+
+def test_out_of_order_batch_pushes_a_strictly_newer_event_ts(
+    spark: SparkSession, root: str
+) -> None:
+    # bronze has one table per event type: a session's earlier events can arrive in a later batch,
+    # and Feast's Redis store skips any write whose timestamp is not newer than the stored row
+    stream = Stream(spark, root)
+    stream.append(
+        [
+            ("product_view", "s1", "p1", "A", _ts(12, 10)),
+            ("add_to_cart", "s1", "p1", "A", _ts(12, 20)),
+        ]
+    )
+    with stream.sessions() as query:
+        query.processAllAvailable()
+        stream.append(
+            [
+                ("page_view", "s1", None, None, _ts(12, 0)),
+                ("search", "s1", None, None, _ts(12, 5)),
+            ]
+        )
+        query.processAllAvailable()
+    first, second = (batch[0] for batch in stream.batches)
+    assert second["event_ts"] > first["event_ts"]
+    assert second == _feature(
+        "s1",
+        _ts(12, 0),
+        _ts(12, 20),
+        4,
+        n_product_views=1,
+        n_categories=1,
+        last_category="A",
+        last_product_ids="p1",
+        n_cart_adds=1,
+    )
 
 
 def test_timeout_closes_the_session(spark: SparkSession, root: str) -> None:

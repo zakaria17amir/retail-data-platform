@@ -62,7 +62,9 @@ def _features(session_id: str, events: pd.DataFrame) -> dict[str, Any]:
         "n_cart_adds": int((events["event_type"] == "add_to_cart").sum()),
         "dwell_seconds": (end - start) // 1000,
         "session_start_ts": pd.Timestamp(start, unit="ms"),
-        "event_ts": pd.Timestamp(end, unit="ms"),
+        # + n_events ms: every update adds events, so the push is always newer than the stored row
+        # even when out-of-order events (one bronze table per type) leave the last event time as is
+        "event_ts": pd.Timestamp(end + len(events), unit="ms"),
     }
 
 
