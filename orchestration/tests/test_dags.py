@@ -69,6 +69,12 @@ def test_gold_daily_renders_models_and_source_checks(dagbag: DagBag) -> None:
     assert {"dbt.stg_orders.run", "dbt.stg_orders.test", "dbt.silver_orders.source"} <= ids
 
 
+def test_gold_daily_runs_multi_parent_tests_after_all_parents(dagbag: DagBag) -> None:
+    dag = dagbag.dags["gold_daily"]
+    (test,) = [t for t in dag.tasks if "assert_fct_orders_count_matches_stg_orders" in t.task_id]
+    assert {"dbt.fct_orders.run", "dbt.stg_orders.run"} <= test.get_flat_relative_ids(upstream=True)
+
+
 def test_silver_hourly_publishes_silver(dagbag: DagBag) -> None:
     dag = dagbag.dags["silver_hourly"]
     quality = dag.get_task("quality")

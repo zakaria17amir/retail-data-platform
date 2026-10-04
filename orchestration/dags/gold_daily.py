@@ -40,6 +40,8 @@ with DAG(
             invocation_mode=InvocationMode.SUBPROCESS,
             source_rendering_behavior=SourceRenderingBehavior.WITH_TESTS_OR_FRESHNESS,
             emit_datasets=False,
+            # a test on several models (e.g. fct_orders vs stg_orders) must wait for all of them
+            should_detach_multiple_parents_tests=True,
         ),
     )
     dbt >> EmptyOperator(task_id="publish_gold", outlets=[GOLD])
