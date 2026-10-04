@@ -1,0 +1,5 @@
+bucket         = "<state bucket from terraform/aws/bootstrap>"
+key            = "snowflake/terraform.tfstate"
+region         = "eu-west-1"
+dynamodb_table = "<lock table from terraform/aws/bootstrap>"
+encrypt        = true
