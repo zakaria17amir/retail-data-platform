@@ -34,6 +34,15 @@ jobs:
       - run: uv run --locked --project ml ruff check ml
       - run: uv run --locked --project ml mypy --config-file ml/pyproject.toml ml/src
       - run: uv run --locked --project ml pytest ml
+      # genai and agents are separate uv projects too (agents has genai as a path dependency). No
+      # Ollama here: the LLM is mocked (LiteLLM mock_response, fake chat model, fake embedder) and
+      # the pgvector/Postgres tests skip without RAG_DSN / POSTGRES_DSN
+      - run: uv run --locked --project genai ruff check genai
+      - run: uv run --locked --project genai mypy --config-file genai/pyproject.toml genai/src
+      - run: uv run --locked --project genai pytest genai -rs
+      - run: uv run --locked --project agents ruff check agents
+      - run: uv run --locked --project agents mypy --config-file agents/pyproject.toml agents/src
+      - run: uv run --locked --project agents pytest agents -rs
 
   integration:
     needs: lint-test
