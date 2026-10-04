@@ -475,7 +475,7 @@ services:
     profiles: [ml]
     build: ml
     image: retail-ml
-    # image ENTRYPOINT is retail-ml (for DockerOperator); reset so `run serving retail-ml …` and uvicorn both work
+    # image ENTRYPOINT is retail-ml (DockerOperator, ml-cli); reset so the command can be uvicorn
     entrypoint: []
     command: ["uvicorn", "retail_ml.serving.app:app", "--host", "0.0.0.0", "--port", "8000"]
     environment: &ml-env
@@ -485,6 +485,7 @@ services:
       FEAST_REGISTRY_PATH: /data/feast/registry.db
       GOLD_DIR: /data/gold
       PROMOTION_MODE: ${PROMOTION_MODE:-auto}
+      GIT_SHA: ${GIT_SHA:-unknown}
     ports:
       - "127.0.0.1:${SERVING_PORT:-8000}:8000"
     volumes:
@@ -495,6 +496,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # contract with T5: /health is liveness, 200 even with no model loaded (body says model_loaded=false),
+    # so `make up PROFILE=ml` (--wait) succeeds on a fresh stack with an empty registry
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -565,8 +568,15 @@ services:
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-}
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/serving.json
+    # runtime guard, not `:?` interpolation, which would fail `docker compose` for every profile
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        : "$${GF_SECURITY_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}"
+        exec /run.sh
     ports:
       - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     volumes:

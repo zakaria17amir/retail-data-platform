@@ -12,7 +12,7 @@ COPY feature_repo feature_repo
 COPY configs configs
 RUN uv sync --locked --no-dev
 
-RUN useradd --create-home --uid 1000 retail
+RUN useradd --create-home --uid 1000 retail && chown retail /app
 USER retail
 
 ENTRYPOINT ["retail-ml"]

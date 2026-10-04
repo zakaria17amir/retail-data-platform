@@ -106,7 +106,7 @@ airflow-cli:
 	docker compose exec airflow airflow $(ARGS)
 
 ml-build:
-	docker compose --profile ml build serving
+	GIT_SHA=$$(git rev-parse --short HEAD) docker compose --profile ml build serving
 
 ml:
-	docker compose --profile ml run --rm ml-cli $(ARGS)
+	GIT_SHA=$$(git rev-parse --short HEAD) docker compose --profile ml run --rm --build ml-cli $(ARGS)

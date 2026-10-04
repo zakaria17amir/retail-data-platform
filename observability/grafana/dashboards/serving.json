@@ -65,20 +65,23 @@
     },
     {
       "id": 4,
-      "type": "bargauge",
-      "title": "Prediction probability distribution (selected range)",
+      "type": "heatmap",
+      "title": "Prediction probability distribution",
       "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": { "orientation": "vertical", "displayMode": "basic", "showUnfilled": true },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "calculate": false,
+        "yAxis": { "axisPlacement": "left" },
+        "cellValues": { "unit": "short" },
+        "tooltip": { "mode": "single", "yHistogram": true }
+      },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (le) (increase(prediction_probability_bucket[$__range]))",
+          "expr": "sum by (le) (increase(prediction_probability_bucket[$__rate_interval]))",
           "legendFormat": "{{le}}",
-          "format": "heatmap",
-          "instant": true
+          "format": "heatmap"
         }
       ]
     },
