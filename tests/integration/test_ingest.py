@@ -43,7 +43,15 @@ SCD2_KEYS = {
     "party/customers": "customer_id",
     "party/sellers": "seller_id",
 }
-EVENT_TYPES = ("add_to_cart", "checkout_started", "page_view", "product_view", "search")
+EVENT_TYPES = (
+    "add_to_cart",
+    "checkout_started",
+    "page_view",
+    "product_view",
+    "recommendation_clicked",
+    "recommendation_shown",
+    "search",
+)
 
 
 def _connect_reachable() -> bool:

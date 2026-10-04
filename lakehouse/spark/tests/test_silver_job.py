@@ -37,6 +37,9 @@ EVENT_COLUMNS = [
     "_bronze_ingest_ts",
     "_silver_loaded_at",
     "_run_id",
+    "rank",
+    "rec_model_version",
+    "rec_strategy",
 ]
 EVENT_BRONZE = (
     "event_id string, event_type string, session_id string, customer_id string, device string, "
@@ -351,6 +354,34 @@ def test_events_table_created_empty_without_bronze(spark: SparkSession, root: st
     loaded = _silver(spark, root, "events/clickstream")
     assert loaded.schema == empty.schema
     assert [(r.event_id, r._run_id) for r in loaded.collect()] == [("e1", "r1")]
+
+
+def test_events_v3_columns_evolve_existing_table(spark: SparkSession, root: str) -> None:
+    path = f"{root}/silver/events/clickstream"
+    _append(spark, root, "events/page_view", _events(spark, [("e1", 0)]))
+    run_table(spark, EVENTS, root, "r1")
+    pre_v3 = _silver(spark, root, "events/clickstream").select(*EVENT_COLUMNS[:-3])
+    pre_v3.write.format("delta").mode("overwrite").option("overwriteSchema", "true").partitionBy(
+        "event_date"
+    ).save(path)
+
+    run_table(spark, EVENTS, root, "r2")
+    evolved = _silver(spark, root, "events/clickstream")
+    assert evolved.columns == EVENT_COLUMNS
+    assert dict(evolved.dtypes)["rank"] == "int"
+
+    shown = _events(spark, [("f1", 0)], rec_model_version="v1", rec_strategy="rerank")
+    shown = shown.withColumns({"event_type": F.lit("recommendation_shown"), "rank": F.lit(2)})
+    _append(spark, root, "events/recommendation_shown", shown)
+    run_table(spark, EVENTS, root, "r3")
+
+    rows = _silver(spark, root, "events/clickstream").collect()
+    assert sorted(
+        (r.event_id, r.event_type, r.rank, r.rec_model_version, r.rec_strategy) for r in rows
+    ) == [
+        ("e1", "page_view", None, None, None),
+        ("f1", "recommendation_shown", 2, "v1", "rerank"),
+    ]
 
 
 def _events_snapshot(spark: SparkSession, root: str) -> tuple[Any, ...]:

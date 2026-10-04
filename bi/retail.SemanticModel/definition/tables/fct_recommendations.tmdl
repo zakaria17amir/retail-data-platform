@@ -1,0 +1,77 @@
+table fct_recommendations
+
+	measure 'Recommendations Shown' =
+			// dbt metric: recommendations_shown (analytics/models/metrics/)
+			COUNTROWS(fct_recommendations)
+		formatString: #,##0
+
+	measure 'Recommendations Clicked' =
+			// dbt metric: recommendations_clicked (analytics/models/metrics/)
+			CALCULATE(
+				COUNTROWS(fct_recommendations),
+				KEEPFILTERS(fct_recommendations[is_clicked] = TRUE())
+			)
+		formatString: #,##0
+
+	measure CTR =
+			// dbt metric: recommendation_ctr (analytics/models/metrics/)
+			DIVIDE([Recommendations Clicked], [Recommendations Shown])
+		formatString: 0.00%
+
+	column event_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: event_id
+
+	column session_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: session_id
+
+	column product_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_id
+
+	column rank
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: rank
+
+	column model_version
+		dataType: string
+		summarizeBy: none
+		sourceColumn: model_version
+
+	column strategy
+		dataType: string
+		summarizeBy: none
+		sourceColumn: strategy
+
+	column event_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: event_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column event_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: event_ts_utc
+
+	column is_clicked
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_clicked
+
+	partition fct_recommendations = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_recommendations.parquet")),
+				    NonNullRows = Table.SelectRows(Source, each [event_id] <> null)
+				in
+				    NonNullRows

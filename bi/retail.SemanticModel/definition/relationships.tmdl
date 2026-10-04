@@ -42,6 +42,14 @@ relationship fct_events_event_date
 	fromColumn: fct_events.event_date
 	toColumn: dim_date.date_day
 
+relationship fct_recommendations_event_date
+	fromColumn: fct_recommendations.event_date
+	toColumn: dim_date.date_day
+
+relationship rpt_recommendation_ctr_event_date
+	fromColumn: rpt_recommendation_ctr.event_date
+	toColumn: dim_date.date_day
+
 relationship rpt_daily_sales_order_purchase_date
 	fromColumn: rpt_daily_sales.order_purchase_date
 	toColumn: dim_date.date_day

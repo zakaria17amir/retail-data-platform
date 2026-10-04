@@ -1,0 +1,58 @@
+table rpt_recommendation_ctr
+
+	column event_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: event_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column model_version
+		dataType: string
+		summarizeBy: none
+		sourceColumn: model_version
+
+	column strategy
+		dataType: string
+		summarizeBy: none
+		sourceColumn: strategy
+
+	column shown
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: shown
+
+	column clicked
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: clicked
+
+	column ctr
+		dataType: double
+		summarizeBy: none
+		sourceColumn: ctr
+
+	column ctr_at_1
+		dataType: double
+		summarizeBy: none
+		sourceColumn: ctr_at_1
+
+	column ctr_at_2
+		dataType: double
+		summarizeBy: none
+		sourceColumn: ctr_at_2
+
+	column ctr_at_3
+		dataType: double
+		summarizeBy: none
+		sourceColumn: ctr_at_3
+
+	partition rpt_recommendation_ctr = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_recommendation_ctr.parquet")),
+				    NonNullRows = Table.SelectRows(Source, each [event_date] <> null)
+				in
+				    NonNullRows

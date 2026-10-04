@@ -143,6 +143,9 @@ TABLES: dict[str, TableSpec] = {
             "_bronze_ingest_ts",
             "_silver_loaded_at",
             "_run_id",
+            "rank",
+            "rec_model_version",
+            "rec_strategy",
         ),
     ),
 }
