@@ -79,9 +79,11 @@ jobs:
         with:
           source: .
           files: docker-compose.yml
-          targets: kafka-connect,spark,replayer,clickstream-sim,serving
+          targets: kafka-connect,spark,replayer,clickstream-sim,serving,mlflow
           load: true
           set: |
+            mlflow.cache-from=type=gha,scope=mlflow
+            mlflow.cache-to=type=gha,scope=mlflow,mode=max
             serving.tags=retail-ml
             serving.cache-from=type=gha,scope=retail-ml
             serving.cache-to=type=gha,scope=retail-ml,mode=max
@@ -134,7 +136,29 @@ jobs:
           -e SMOKE_CHECK -e EXPECTED_SHA="$GIT_SHA"
           -e MLFLOW_TRACKING_URI=sqlite:////tmp/mlflow.db -e FEAST_REGISTRY_PATH=/tmp/registry.db
           --entrypoint sh ml-cli -ec 'retail-ml train late_delivery && python -c "$SMOKE_CHECK"'
+      # realtime e2e on the same stack (cheaper than a job that rebuilds bronze/silver/gold): sample
+      # champions (manual promotion: deterministic) and candidates, then PROFILE=realtime, whose
+      # serving loads the champions at start. ml-cli runs as uid 1000, the runner is not
+      - name: realtime champions and candidates
+        run: |
+          mkdir -p data/feast && chmod -R a+rwX data
+          docker compose --profile realtime up -d --wait mlflow redis
+          ml() { docker compose run --rm ml-cli "$@"; }
+          ml train late_delivery --promotion-mode manual
+          ml promote late_delivery --version 1
+          ml materialize
+          uv run --package clickstream-sim clickstream-sim generate
+          ml train recommender --promotion-mode manual
+          ml promote recommender --version 1
+          ml publish-candidates
+      - run: make up PROFILE=realtime
+      - env:
+          PYTEST_ADDOPTS: "-rsP --strict-markers"
+        run: |
+          set -o pipefail
+          ALLOW_RESEED=1 uv run pytest -m realtime tests/integration | tee realtime.txt
+          grep -q ' passed' realtime.txt && ! grep -q ' skipped' realtime.txt
       - if: failure()
-        run: docker compose --profile ingest logs --tail 100
+        run: docker compose --profile ingest --profile realtime logs --tail 100
       - if: always()
         run: make down
