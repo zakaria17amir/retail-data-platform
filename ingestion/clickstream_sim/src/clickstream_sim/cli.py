@@ -10,7 +10,8 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
+from functools import partial
 from pathlib import Path
 from types import FrameType
 from typing import Protocol
@@ -19,13 +20,16 @@ import psycopg
 from dotenv import find_dotenv, load_dotenv
 
 from clickstream_sim.cdc import OrderFeed
-from clickstream_sim.events import Catalogue, OrderRef, browsing_session, converting_session
+from clickstream_sim.events import Catalogue, OrderRef, order_sessions
 from clickstream_sim.faults import Emission, FaultConfig, inject
+from clickstream_sim.feedback import Recommendations, feedback_events, fetch_recommendations
+from clickstream_sim.offline import generate
 from clickstream_sim.producer import EventProducer
 
 DEFAULT_DSN = "postgresql://retail:retail@127.0.0.1:5432/retail"
+DEFAULT_RECOMMEND_URL = "http://127.0.0.1:8000"
+FEEDBACK_SCHEMA = 3
 LATE_THRESHOLD_S = 3600
-BROWSING_JITTER_S = 3600
 IDLE_POLL_S = 1.0
 MAX_WAIT_S = 0.1
 
@@ -56,6 +60,7 @@ class SimConfig:
     browsing_ratio: int = 3
     seed: int = 42
     schemas_dir: Path = Path("ingestion/schemas/events")
+    recommend_url: str = DEFAULT_RECOMMEND_URL
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "SimConfig":
@@ -72,6 +77,7 @@ class SimConfig:
             browsing_ratio=int(env.get("SIM_BROWSING_RATIO", "3")),
             seed=int(env.get("SIM_SEED", "42")),
             schemas_dir=Path(env.get("SIM_SCHEMAS_DIR", "ingestion/schemas/events")),
+            recommend_url=env.get("RECOMMEND_URL", DEFAULT_RECOMMEND_URL),
         )
 
 
@@ -91,12 +97,15 @@ def run(
     feed: Feed | None = None,
     producer: Sink | None = None,
     catalogue: Catalogue | None = None,
+    recommend: Callable[[str], Recommendations | None] | None = None,
 ) -> dict[str, int]:
     feed = feed or OrderFeed(cfg.bootstrap, cfg.registry_url)
     producer = producer or EventProducer(cfg.bootstrap, cfg.registry_url, cfg.schemas_dir)
     catalogue = catalogue or load_catalogue(cfg.postgres_dsn)
     faults = FaultConfig(cfg.late_rate, cfg.late_max_hours, cfg.dup_rate, cfg.bad_rate)
     rng = random.Random(cfg.seed)
+    # separate stream so turning feedback on leaves the base clickstream byte-identical
+    feedback_rng = random.Random(f"{cfg.seed}:feedback")
 
     stop = threading.Event()
 
@@ -120,6 +129,8 @@ def run(
         "bad": 0,
         "late": 0,
         "schema_v2": 0,
+        "feedback": 0,
+        "recommend_failures": 0,
     }
     try:
         while not stop.is_set():
@@ -130,25 +141,31 @@ def run(
                 wait = min(max(heap[0][0] - now(), 0.0), MAX_WAIT_S) if heap else IDLE_POLL_S
                 order = feed.poll(wait)
                 if order is not None:
-                    sessions = [converting_session(order, catalogue, rng)]
-                    for i in range(cfg.browsing_ratio):
-                        jitter = timedelta(
-                            seconds=rng.randint(-BROWSING_JITTER_S, BROWSING_JITTER_S)
-                        )
-                        key = f"{order.order_id}:browse:{i}"
-                        sessions.append(
-                            browsing_session(order.purchase_ts + jitter, catalogue, rng, key)
-                        )
+                    sessions = order_sessions(order, catalogue, rng, cfg.browsing_ratio)
                     for event in (e for session in sessions for e in session):
                         if max_events is not None and generated >= max_events:
                             break
                         version = 2 if 0 < cfg.schema_evolve_after <= generated else 1
                         generated += 1
-                        for emission in inject([event], faults, rng, version):
-                            due = now() + emission.delay_s / cfg.speed
+                        emissions = inject([event], faults, rng, version)
+                        dues = [now() + e.delay_s / cfg.speed for e in emissions]
+                        for due, emission in zip(dues, emissions, strict=True):
                             bad = emission.event is not event
                             heapq.heappush(
                                 heap, (due, next(tie_breaker), emission, order.purchase_ts, bad)
+                            )
+                        if recommend is None or event.event_type != "product_view":
+                            continue
+                        recs = recommend(event.session_id or "")
+                        if recs is None:
+                            counts["recommend_failures"] += 1
+                            continue
+                        category = catalogue.category_of.get(event.product_id or "")
+                        for fb in feedback_events(event, recs, category, feedback_rng):
+                            emission = Emission(fb, emissions[0].delay_s, False, FEEDBACK_SCHEMA)
+                            heapq.heappush(
+                                heap,
+                                (dues[0], next(tie_breaker), emission, order.purchase_ts, False),
                             )
             produced_now = False
             while heap and heap[0][0] <= now():
@@ -156,6 +173,9 @@ def run(
                 producer.produce(emission, fallback)
                 produced_now = True
                 counts["produced"] += 1
+                if emission.schema_version == FEEDBACK_SCHEMA:
+                    counts["feedback"] += 1
+                    continue
                 if emission.is_duplicate:
                     counts["duplicates"] += 1
                     counts["null_id_duplicates"] += emission.event.event_id is None
@@ -178,6 +198,8 @@ def run(
         "late": counts["late"],
         "produced": counts["produced"],
         "schema_v2": counts["schema_v2"],
+        "feedback": counts["feedback"],
+        "recommend_failures": counts["recommend_failures"],
         "delivery_errors": producer.errors,
         "unflushed": unflushed,
     }
@@ -206,10 +228,30 @@ def main(argv: list[str] | None = None) -> int:
     run_parser = commands.add_parser("run", help="generate clickstream events from live orders")
     run_parser.add_argument("--max-events", type=int)
     run_parser.add_argument("--summary-file", type=Path)
+    run_parser.add_argument(
+        "--feedback", action="store_true", help="call RECOMMEND_URL and emit feedback events"
+    )
+    gen_parser = commands.add_parser("generate", help="write offline session history to parquet")
+    gen_parser.add_argument("--gold-dir", type=Path, default=Path("data/gold"))
+    gen_parser.add_argument(
+        "--out", type=Path, default=Path("data/gold/ml/sessions_offline.parquet")
+    )
     args = parser.parse_args(argv)
     try:
         cfg = SimConfig.from_env(os.environ)
-        summary = run(cfg, max_events=args.max_events, summary_file=args.summary_file)
+        if args.command == "generate":
+            started = time.monotonic()
+            counts = generate(
+                args.gold_dir, args.out, seed=cfg.seed, browsing_ratio=cfg.browsing_ratio
+            )
+            for key, value in counts.items():
+                print(f"{key}: {value}")
+            print(f"runtime_s: {time.monotonic() - started:.1f}")
+            return 0
+        recommend = partial(fetch_recommendations, cfg.recommend_url) if args.feedback else None
+        summary = run(
+            cfg, max_events=args.max_events, summary_file=args.summary_file, recommend=recommend
+        )
     except (ValueError, FileNotFoundError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
