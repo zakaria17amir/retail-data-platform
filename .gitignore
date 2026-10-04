@@ -61,6 +61,7 @@ data/raw/
 # Gold Parquet and the local DuckDB warehouse
 data/gold/
 data/warehouse/
+data/feast/
 
 # Spark local artefacts
 spark-warehouse/
