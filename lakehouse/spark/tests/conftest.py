@@ -1,8 +1,14 @@
+import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from pyspark.sql import SparkSession
+
+# pyspark collects timestamps in the process zone; pin it so expected datetimes are UTC everywhere
+os.environ["TZ"] = "UTC"
+getattr(time, "tzset", lambda: None)()  # POSIX only; the spark tests run in the Linux container
 
 
 @pytest.fixture(scope="session")

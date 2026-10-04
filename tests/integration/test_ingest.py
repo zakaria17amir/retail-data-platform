@@ -1,26 +1,30 @@
-"""End-to-end ingest test: sample DB -> Debezium -> Redpanda -> Spark -> bronze Delta.
+"""End-to-end ingest test: sample DB -> Debezium -> Redpanda -> Spark -> bronze -> silver Delta.
 
 Destructive: reseeds the database with tests/fixtures/olist_sample, deletes the cdc/events topics
-and clears bronze/ and the streaming checkpoints (ingestion/reset-bronze.sh). Requires
-ALLOW_RESEED=1 and the ingest profile up. Restore afterwards with `make reset-bronze SEED=seed`.
+and clears bronze/, silver/ and the streaming checkpoints (ingestion/reset-bronze.sh), then runs
+`make silver` and `make quality`. Requires ALLOW_RESEED=1, `make` on PATH and the ingest profile
+up. Restore afterwards with `make reset-bronze SEED=seed`.
 """
 
 import csv
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, LiteralString
 from urllib.request import urlopen
 
+import psycopg
 import pytest
 from deltalake import DeltaTable
-from deltalake.exceptions import DeltaError
+from deltalake.exceptions import DeltaError, TableNotFoundError
 from dotenv import find_dotenv, load_dotenv
-from lakehouse_spark.cli import status_counts, storage_options
+from lakehouse_spark.cli import SILVER_TABLES, status_counts, storage_options
 from replayer.schema import TABLES
 
 load_dotenv(find_dotenv(usecwd=True))
@@ -33,6 +37,12 @@ CONNECT_URL = os.environ.get("KAFKA_CONNECT_URL", "http://127.0.0.1:8083")
 BUCKET = os.environ.get("LAKEHOUSE_BUCKET", "lakehouse")
 POLL_TIMEOUT_S = 240
 POLL_INTERVAL_S = 5
+MAKE_TIMEOUT_S = 1800
+SCD2_KEYS = {
+    "catalog/products": "product_id",
+    "party/customers": "customer_id",
+    "party/sellers": "seller_id",
+}
 EVENT_TYPES = ("add_to_cart", "checkout_started", "page_view", "product_view", "search")
 
 
@@ -106,6 +116,58 @@ def _wait_for_consumer_group(group: str) -> None:
             return
         time.sleep(2)
     pytest.fail(f"consumer group {group} did not become Stable")
+
+
+def _make(target: str) -> str:
+    result = _run(["make", target], timeout=MAKE_TIMEOUT_S, stdin=subprocess.DEVNULL)
+    return result.stdout + result.stderr
+
+
+def _silver_run() -> str:
+    output = _make("silver")
+    match = re.search(r"silver run (\S+)", output)
+    assert match, output
+    return match.group(1)
+
+
+def _delta(path: str) -> DeltaTable:
+    root = f"s3://{BUCKET}"
+    return DeltaTable(f"{root}/{path}", storage_options=storage_options(root, os.environ))
+
+
+def _rows(path: str, columns: list[str] | None = None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = _delta(path).to_pyarrow_table(columns=columns).to_pylist()
+    return rows
+
+
+def _silver_row_counts() -> dict[str, int]:
+    paths = [f"silver/{t}" for t in SILVER_TABLES]
+    paths += [f"silver/_rejects/{t}" for t in SILVER_TABLES] + ["silver/_rule_metrics"]
+    counts = {}
+    for path in paths:
+        try:
+            counts[path] = int(_delta(path).to_pyarrow_dataset().count_rows())
+        except TableNotFoundError:
+            continue
+    return counts
+
+
+def _pg(query: LiteralString) -> list[tuple[Any, ...]]:
+    with psycopg.connect(os.environ["POSTGRES_DSN"]) as conn:
+        return conn.execute(query).fetchall()
+
+
+def _scd2_versions(table: str) -> dict[str, list[dict[str, Any]]]:
+    key = SCD2_KEYS[table]
+    versions: dict[str, list[dict[str, Any]]] = {}
+    for row in _rows(f"silver/{table}"):
+        versions.setdefault(row[key], []).append(row)
+    for k, rows in versions.items():
+        rows.sort(key=lambda r: r["_source_lsn"])
+        assert sum(r["is_current"] for r in rows) == 1, (table, k, rows)
+        assert all((r["valid_to"] is None) == r["is_current"] for r in rows), (table, k, rows)
+        assert all(a["valid_to"] == b["valid_from"] for a, b in pairwise(rows)), (table, k, rows)
+    return versions
 
 
 def test_ingest_end_to_end(tmp_path: Path) -> None:
@@ -203,3 +265,62 @@ def test_ingest_end_to_end(tmp_path: Path) -> None:
     )
     columns = {name for table in tables for name in table.schema().to_arrow().names}
     assert "utm_campaign" in columns
+
+
+def test_silver_and_quality() -> None:
+    _silver_run()
+    status = _status()
+    orders = _rows("silver/sales/orders", ["order_id", "order_status"])
+    assert len(orders) == 200
+    assert {r["order_id"]: r["order_status"] for r in orders} == dict(
+        _pg("select order_id, order_status from olist.orders")
+    )
+    assert status["silver/sales/order_items"] == 229
+    assert status["silver/sales/order_payments"] == 211
+    assert status["silver/sales/order_reviews"] == 200
+    [(customers,)] = _pg("select count(distinct customer_id) from olist.customers")
+    assert status["silver/party/customers"] == customers
+    assert status["silver/catalog/products"] == 198
+    assert status["silver/party/sellers"] == 162
+    geo_rejects = status.get("silver/_rejects/geo/geolocation_points", 0)
+    assert status["silver/geo/geolocation_points"] + geo_rejects == 1000
+    event_rejects = status.get("silver/_rejects/events/clickstream", 0)
+    bronze_events = sum(status[f"bronze/events/{t}"] for t in EVENT_TYPES)
+    assert status["silver/events/clickstream"] + event_rejects == bronze_events, status
+    for table in ("catalog/products", "party/sellers"):
+        _scd2_versions(table)
+
+    customers_versions = _scd2_versions("party/customers")
+    touched, changed = sorted(k for k, v in customers_versions.items() if len(v) == 1)[:2]
+    bronze_customers = status["bronze/olist/customers"]
+    with psycopg.connect(os.environ["POSTGRES_DSN"], autocommit=True) as conn:
+        conn.execute(
+            "update olist.customers set updated_at = now() where customer_id = %s", (touched,)
+        )
+        conn.execute(
+            "update olist.customers set customer_city = 'x' where customer_id = %s", (changed,)
+        )
+    _wait_until(
+        "the customer updates to reach bronze",
+        lambda s: s["bronze/olist/customers"] == bronze_customers + 2,
+    )
+    _silver_run()
+    customers_versions = _scd2_versions("party/customers")
+    assert len(customers_versions[touched]) == 1
+    old, new = customers_versions[changed]
+    assert old["customer_city"] != "x" and new["customer_city"] == "x" and new["is_current"]
+
+    counts = _silver_row_counts()
+    run_id = _silver_run()
+    assert _silver_row_counts() == counts
+    # a run with no new bronze commits processes no batch, so it writes no metrics rows at all
+    metrics = _rows("silver/_rule_metrics", ["run_id", "rows_in"])
+    assert sum(r["rows_in"] for r in metrics if r["run_id"] == run_id) == 0
+
+    _make("quality")
+    results = _rows("silver/_dq_results")
+    latest = max(results, key=lambda r: r["checked_at"])["run_id"]
+    run = [r for r in results if r["run_id"] == latest]
+    assert run
+    critical = [r for r in run if r["severity"] == "critical" and not r["success"]]
+    assert not critical, critical

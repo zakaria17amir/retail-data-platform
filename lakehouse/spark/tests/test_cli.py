@@ -1,5 +1,6 @@
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,46 @@ def test_quarantine_reason_histogram(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert "quarantine/events reasons: " in out
     histogram = json.loads(_status(tmp_path, capsys, "--json"))["quarantine/events reasons"]
     assert histogram == {"null_primary_key": 2, "unparseable_timestamp": 1}
+
+
+def test_status_lists_silver_rejects_and_latest_rule_metrics(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    silver = tmp_path / "silver"
+    _write(
+        silver / "catalog" / "products", product_id=["a", "a", "b"], is_current=[False, True, True]
+    )
+    _write(silver / "sales" / "orders", order_id=["o1", "o2"])
+    _write(silver / "_rejects" / "geo" / "geolocation_points", rule_id=["geo_out_of_bbox"] * 2)
+    geo, events = "geo/geolocation_points", "events/clickstream"
+    _write(
+        silver / "_rule_metrics",
+        run_id=["r0", "r1", "r1", "r1", "r1"],
+        table=[geo, geo, geo, geo, events],
+        rule_id=[
+            "geo_out_of_bbox",
+            "geo_out_of_bbox",
+            "geo_out_of_bbox",
+            "rename_columns",
+            "event_duplicate",
+        ],
+        rows_in=[10, 600_000, 400_000, 1_000_000, 200],
+        rows_rejected=[5, 15, 12, 0, 1],
+        pct_rejected=[50.0, 0.0025, 0.003, 0.0, 0.5],
+        run_ts=[
+            datetime(2017, 1, 1),
+            datetime(2017, 1, 2),
+            datetime(2017, 1, 2),
+            datetime(2017, 1, 2),
+            datetime(2017, 1, 2, 1),
+        ],
+    )
+    lines = _status(tmp_path, capsys).splitlines()
+    assert "silver/catalog/products: 2" in lines
+    assert "silver/sales/orders: 2" in lines
+    assert "silver/party/customers: 0" in lines
+    assert "silver/_rejects/geo/geolocation_points: 2" in lines
+    assert [line for line in lines if line.startswith("rule ")] == [
+        "rule event_duplicate rejected 1 rows (0.500 %) in events/clickstream",
+        "rule geo_out_of_bbox rejected 27 rows (0.003 %) in geo/geolocation_points",
+    ]

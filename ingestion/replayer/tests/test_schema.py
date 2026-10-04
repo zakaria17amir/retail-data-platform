@@ -40,6 +40,17 @@ def test_publication_exists(conn: psycopg.Connection) -> None:
     assert row is not None
 
 
+@pytest.mark.integration
+def test_replica_identity_full(conn: psycopg.Connection) -> None:
+    apply_schema(conn)
+    rows = conn.execute(
+        "select c.relname, c.relreplident from pg_class c "
+        "join pg_namespace n on n.oid = c.relnamespace "
+        "where n.nspname = 'olist' and c.relkind = 'r'"
+    ).fetchall()
+    assert dict(rows) == {t.name: "f" for t in TABLES}
+
+
 def test_connection_error_hides_password(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

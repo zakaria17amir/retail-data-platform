@@ -1,8 +1,9 @@
 #!/bin/sh
 # Rebuilds the whole ingest path from the current database content:
 # stops spark, forgets the Debezium connector/slot, deletes the CDC and event topics, clears
-# bronze/ and the streaming checkpoints, reloads the database (seed|seed-sample), re-registers the
-# connector (its stored offsets were reset, so the initial snapshot runs again) and restarts spark.
+# bronze/, silver/ and the streaming checkpoints, reloads the database (seed|seed-sample),
+# re-registers the connector (its stored offsets were reset, so the initial snapshot runs again) and
+# restarts spark.
 # Usage (repo root, environment from .env): sh ingestion/reset-bronze.sh seed|seed-sample
 set -eu
 
@@ -49,10 +50,10 @@ echo "[4/8] deleting topics cdc.olist.* and events.*, consumer group clickstream
 $COMPOSE exec -T redpanda rpk topic delete -r '^cdc\.olist\..*' '^events\..*' >/dev/null 2>&1 || true
 $COMPOSE exec -T redpanda rpk group delete clickstream-sim >/dev/null 2>&1 || true
 
-echo "[5/8] clearing bronze/ and _checkpoints/ in bucket $LAKEHOUSE_BUCKET"
+echo "[5/8] clearing bronze/, silver/ and _checkpoints/ in bucket $LAKEHOUSE_BUCKET"
 $COMPOSE exec -T minio sh -c \
   "mc alias set local http://localhost:9000 \"\$MINIO_ROOT_USER\" \"\$MINIO_ROOT_PASSWORD\" >/dev/null \
-   && mc rm -r --force local/$LAKEHOUSE_BUCKET/bronze local/$LAKEHOUSE_BUCKET/_checkpoints" \
+   && mc rm -r --force local/$LAKEHOUSE_BUCKET/bronze local/$LAKEHOUSE_BUCKET/_checkpoints local/$LAKEHOUSE_BUCKET/silver" \
   >/dev/null 2>&1 || true
 
 echo "[6/8] reloading database ($SEED_TARGET)"
