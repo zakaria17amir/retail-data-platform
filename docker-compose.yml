@@ -626,7 +626,8 @@ services:
     build: *ml-build
     image: retail-ml
     entrypoint: ["feast"]
-    command: ["-c", "/feature_repo", "serve", "-h", "0.0.0.0", "-p", "6566"]
+    # 2 workers and no gunicorn recycling (--max-requests 0): pushes never hit a restarting worker
+    command: ["-c", "/feature_repo", "serve", "-h", "0.0.0.0", "-p", "6566", "-w", "2", "--max-requests", "0"]
     environment:
       <<: *ml-env
       # `feast serve` substitutes REDIS_URL raw into feature_store.yaml: Feast connection format
