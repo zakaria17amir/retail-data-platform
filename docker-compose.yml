@@ -346,6 +346,8 @@ services:
       # absolute: Cosmos runs dbt from a temp copy of the project, so the ../data defaults would break
       DUCKDB_PATH: /opt/airflow/data/warehouse/retail.duckdb
       GOLD_DIR: /opt/airflow/data/gold
+      # train DAGs pass it as --promotion-mode to the retail-ml containers
+      PROMOTION_MODE: ${PROMOTION_MODE:-auto}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:
