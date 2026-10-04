@@ -1,0 +1,22 @@
+# Late-delivery risk at approval. Paths are relative to GOLD_DIR.
+experiment: late_delivery
+registered_model: late_delivery
+training_path: ml/late_delivery_training.parquet
+split:  # train: approved < validation_start; validation: [validation_start, test_start); test: [test_start, test_end)
+  validation_start: "2018-03-01"
+  test_start: "2018-06-01"
+  test_end: "2018-09-01"
+logistic:
+  C: 1.0
+  max_iter: 2000
+lightgbm:
+  n_estimators: 2000
+  learning_rate: 0.03
+  num_leaves: 31
+  min_child_samples: 50
+  subsample: 0.8
+  subsample_freq: 1
+  colsample_bytree: 0.8
+  random_state: 42
+  verbose: -1
+early_stopping_rounds: 100

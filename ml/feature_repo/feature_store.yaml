@@ -1,0 +1,10 @@
+project: retail
+provider: local
+# retail_ml.config sets defaults for both variables before loading this file
+registry: ${FEAST_REGISTRY_PATH}
+online_store:
+  type: redis
+  connection_string: ${REDIS_URL}
+offline_store:
+  type: file
+entity_key_serialization_version: 3
