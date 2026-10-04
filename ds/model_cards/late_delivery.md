@@ -13,7 +13,7 @@
 Rank approved orders by risk of being delivered after the estimated delivery date, so an operations
 team can review a **fixed alert budget** (e.g. the riskiest 10 % of orders) for proactive seller
 follow-up or customer messaging. Served online by `POST /predict/late-delivery` and scored nightly
-into `gold/pred_late_delivery/`.
+into `data/gold/ml/pred_late_delivery.parquet`.
 
 Out of scope: deciding service levels, pricing, credit or fraud for individual customers; treating
 the score as a calibrated probability; any use outside Olist-like marketplace data.
@@ -60,7 +60,7 @@ test 0.0059) and is not a useful operating point.
 Trained on a 7.59 % base rate. Mean prediction 0.0866 vs observed 0.1194 on validation (under), 0.0609
 vs 0.0546 on test (over). Test reliability: low deciles over-predicted (first decile 0.0152 vs
 0.0070), deciles 7–9 under-predicted, top decile over-predicted (0.1798 vs 0.1457). Brier passes the
-promotion gate (≤ logistic) but the probabilities do not transfer across periods. Use the score for
+promotion gate (0.0497 ≤ min(prior 0.0521, logistic 0.0533)) but the probabilities do not transfer across periods. Use the score for
 ranking; recalibrate on a recent labelled window before quoting probabilities.
 
 ## Explainability
@@ -78,7 +78,8 @@ riskier) and distance (further → riskier). Details: `ds/reports/error_analysis
   period-specific.
 - **Validation and test disagree.** Logistic wins every validation metric, LightGBM every test
   metric. One validation window is not enough to rank them reliably; v1 is weakly supported.
-- **The test window is not an untouched holdout**: promotion used the test Brier (vs logistic).
+- **The test window is not an untouched holdout**: promotion used the test PR-AUC (vs the champion)
+  and the test Brier (vs min(prior, logistic)).
 - **No embargo between splits.** Splits cut on approval date, but labels arrive at delivery: 3,560
   train rows (6.23 %, 31.97 % of them late) were delivered on/after the validation start and 2,369
   validation rows (11.46 %) on/after the test start. A model deployed on 2018-03-01 could not have
@@ -108,5 +109,8 @@ dropping the state features. No personal attributes (age, gender, income) are us
 ## Monitoring
 
 Daily Evidently drift and delayed ground-truth performance by week (`monitor_late_delivery` DAG, `ml_monitoring` table); the
-`train_late_delivery` DAG retrains on thresholds. Promotion requires beating the champion's test
-Brier and passing the model tests; manual approval mode is available (`PROMOTION_MODE=manual`).
+`train_late_delivery` DAG retrains on thresholds. Promotion requires a higher test PR-AUC than the
+champion re-scored on the same test window, plus the model tests (no NaN, range [0, 1], test Brier ≤
+min(constant prior, logistic)); manual approval mode is available (`PROMOTION_MODE=manual`). On the
+frozen replay data the drift breach persists (drift share 0.3125 > 0.3) and a retrain cannot clear it,
+so `monitor_late_delivery` stays paused by default (see ADR-0006).

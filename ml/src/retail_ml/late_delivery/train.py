@@ -24,7 +24,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from retail_ml.config import LateDeliveryConfig
 from retail_ml.data import frame_sha256, historical_seller_features, read_training, sha256_file
 from retail_ml.features import CATEGORICAL, NUMERIC, SELLER_FEATURES, OrderFeatures
-from retail_ml.late_delivery.evaluate import classification_metrics
+from retail_ml.late_delivery.evaluate import brier_baseline, classification_metrics
 from retail_ml.late_delivery.promote import Decision, promote
 
 LABEL = "is_late"
@@ -206,7 +206,7 @@ def train(
         version,
         X["test"],
         y["test"],
-        baseline_brier=metrics["logistic"]["test_brier"],
+        baseline_brier=brier_baseline(metrics),
         mode=promotion_mode,
     )
     return TrainResult(run_ids, metrics, version, decision)

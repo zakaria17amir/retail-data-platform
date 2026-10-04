@@ -30,7 +30,8 @@ make ml ARGS="monitor late_delivery"          # exit 3 = drift / performance bre
 ```
 
 Each train registers a new version with alias `challenger`; with `PROMOTION_MODE=auto` (default) it
-moves `champion` when it beats the current one on the same test window and passes the model tests. In
+moves `champion` when it beats the current one on the same test window and passes the model tests
+(late delivery: no NaN, range [0, 1], test Brier ≤ min(constant prior, logistic)). In
 `manual` mode it prints the approval command: `make ml ARGS="promote late_delivery --version N"`.
 
 Host-side (`uv run --project ml retail-ml …`) uses the host URLs in `.env`; export them first
@@ -75,6 +76,12 @@ alert webhook; `retrain` triggers `train_late_delivery` unless it succeeded with
 `RETRAIN_COOLDOWN_HOURS` (72) or `PROMOTION_MODE=manual`. Monitor thresholds in `.env`
 (`DRIFT_SHARE_THRESHOLD`, `MONITOR_WINDOW_DAYS`, …) reach the tasks after `make up PROFILE=analytics`.
 
+Leave `monitor_late_delivery` paused by default. On the frozen replay data every run breaches (drift
+share 0.3125 > 0.3 against the fixed training reference), and a retrain on the same data re-creates
+the same model, which is not promoted, so the breach never clears: unpaused, that is a daily alert and
+a non-promoted registry version every 72 h. For a demo, keep it paused or set `PROMOTION_MODE=manual`
+(alert only, no retrain). A future change makes drift alert-only and retrains only on a PR-AUC breach.
+
 ## Monitoring output
 
 - Evidently HTML: `s3://lakehouse/monitoring/late_delivery/<date>.html` (`MONITORING_REPORT_ROOT`;
@@ -82,6 +89,8 @@ alert webhook; `retrain` triggers `train_late_delivery` unless it succeeded with
 - Metrics rows (`run_ts, metric, value, window`): `data/gold/ml/ml_monitoring.parquet`; a failed
   report upload records `report_uploaded = 0` and does not hide a breach.
 - Drift test by window size: KS / chi-square under 1,000 current rows, Evidently defaults above.
+- Expected on the replay data: exit 3 on every run (`drift_share` 0.3125, 5 of 16 features); retraining
+  cannot clear it (see Airflow above).
 
 ## Troubleshooting
 

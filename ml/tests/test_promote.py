@@ -7,6 +7,7 @@ import pytest
 from mlflow import MlflowClient
 
 from retail_ml.config import promotion_mode
+from retail_ml.late_delivery.evaluate import brier_baseline
 from retail_ml.late_delivery.promote import approve, promote
 
 NAME = "late_delivery"
@@ -154,6 +155,24 @@ def test_failed_model_test_blocks_promotion_even_without_champion(
     baseline = 0.0 if failure == "brier" else BASELINE_BRIER
     decision = promote(client, NAME, v, *data, baseline_brier=baseline)
     assert not decision.promoted and failure in decision.reason
+    assert "champion" not in _aliases(client)
+
+
+def test_beating_logistic_but_not_the_prior_fails_the_brier_gate(
+    mlflow_uri: str, data: Any
+) -> None:
+    client = MlflowClient()
+    X, y = data
+    brier = float(np.mean((GOOD.predict(None, X) - y.to_numpy(dtype=float)) ** 2))
+    metrics = {
+        "constant_prior": {"test_brier": brier - 0.01},
+        "logistic": {"test_brier": brier + 0.01},
+        "lightgbm": {"test_brier": brier},
+    }
+    assert brier_baseline(metrics) == pytest.approx(brier - 0.01)
+    v = _register(GOOD)
+    decision = promote(client, NAME, v, X, y, baseline_brier=brier_baseline(metrics))
+    assert not decision.promoted and "brier" in decision.reason and "baseline" in decision.reason
     assert "champion" not in _aliases(client)
 
 

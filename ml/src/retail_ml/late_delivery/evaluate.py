@@ -31,8 +31,13 @@ def classification_metrics(y: Any, p: Any) -> dict[str, float]:
     }
 
 
+def brier_baseline(metrics: dict[str, dict[str, float]]) -> float:
+    """Calibration bar: test Brier of the better of the constant prior and logistic."""
+    return min(metrics["constant_prior"]["test_brier"], metrics["logistic"]["test_brier"])
+
+
 def model_test_failures(y: Any, p: Any, baseline_brier: float) -> list[str]:
-    """Empty list = passes: no NaN, range [0, 1], Brier <= logistic baseline."""
+    """Empty list = passes: no NaN, range [0, 1], Brier <= min(prior, logistic) baseline."""
     p = np.asarray(p, dtype=float)
     if np.isnan(p).any():
         return ["nan predictions"]
@@ -41,5 +46,5 @@ def model_test_failures(y: Any, p: Any, baseline_brier: float) -> list[str]:
         failures.append("predictions out of range [0, 1]")
     brier = float(np.mean((p - np.asarray(y, dtype=float)) ** 2))
     if brier > baseline_brier:
-        failures.append(f"brier {brier:.4f} > logistic baseline {baseline_brier:.4f}")
+        failures.append(f"brier {brier:.4f} > baseline {baseline_brier:.4f} (min prior/logistic)")
     return failures

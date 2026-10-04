@@ -18,7 +18,9 @@ Phase 4 adds late-delivery risk (batch + online) and a demand forecast on replay
 - **Registry:** MLflow 3 (Postgres + MinIO) with aliases `champion`/`challenger`, not the deprecated
   stages; `--serve-artifacts` proxy, GenAI job runner off (~1.3 GB). Promotion (`auto` default,
   `manual` = challenger only + `retail-ml promote`): beat the champion re-scored on the same test window
-  (PR-AUC / WAPE), no NaN or out-of-range output, late-delivery Brier ≤ logistic baseline.
+  (PR-AUC / WAPE), no NaN or out-of-range output, late-delivery test Brier ≤ min(constant prior,
+  logistic) test Brier — on the full test window logistic (0.0533) is worse than the prior (0.0521),
+  so a logistic-only bar would accept a model calibrated worse than the base rate.
 - **Orchestration:** ML tasks are DockerOperator runs of `retail-ml` over the host socket, all in a
   1-slot Airflow pool `ml` (the Feast file registry has no lock). A monitor breach (exit 3) alerts and
   retrains at most once per `RETRAIN_COOLDOWN_HOURS` (72); `PROMOTION_MODE=manual` alerts only.
@@ -35,8 +37,12 @@ Phase 4 adds late-delivery risk (batch + online) and a demand forecast on replay
 - **No DVC:** data versions are the gold Parquet SHA-256 + Delta time travel, logged per MLflow run.
 
 ## Consequences
-- Known limitation (DS review): the Brier gate should be ≤ min(constant prior, logistic) — on the full
-  test window logistic (0.0533) is worse than the prior (0.0521). Not implemented in Phase 4.
+- On the frozen replay data the monitor breaches on every run: drift share 0.3125 > 0.3 (5 of 16
+  features) against the fixed training reference (approved < 2018-03-01). A retrain uses the same
+  split and data, re-creates the same model and is not promoted, so it cannot clear the breach — once
+  unpaused that is a daily alert and a non-promoted version every 72 h. `monitor_late_delivery`
+  therefore stays paused by default; for demos keep it paused or set `PROMOTION_MODE=manual` (alert,
+  no retrain). Future change: drift alerts only, retrain only on a PR-AUC breach.
 - `/reload` reaches 1 of 4 workers; switching the champion means restarting `serving`.
 - Drift thresholds differ by window size; the monitor window overlaps the champion's test window, so
   its PR-AUC is a pipeline check, not an independent holdout.

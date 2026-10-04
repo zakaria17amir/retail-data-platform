@@ -11,7 +11,7 @@
 ## Intended use
 
 28-day daily forecast of distinct revenue orders per product_category × customer_state for
-category/regional planning dashboards (`gold/pred_demand_forecast/`). Best suited to aggregate views
+category/regional planning dashboards (`data/gold/ml/pred_demand_forecast.parquet`). Best suited to aggregate views
 (state or category roll-ups); on the 10 largest series the seasonal-naive baseline is currently
 better (see metrics).
 

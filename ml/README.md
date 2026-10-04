@@ -56,7 +56,14 @@ when the latest week with ≥ `MIN_LABELLED` labels and ≥ `MIN_POSITIVES` posi
 champion `test_pr_auc` − 0.05 (smaller or single-class weeks are recorded, not gated). Rows
 (`run_ts, metric, value, window`) are appended to `GOLD_DIR/ml/ml_monitoring.parquet` and the breach
 decided before the report upload; a failed upload logs and records `report_uploaded = 0`. An empty
-current window exits 0 with a warning.
+current window exits 0 with a warning. `MONITOR_TAIL_RATIO` (0.2) is deliberately looser than the
+demand tail cut (0.5): thin ramp-down days bias daily counts, not per-order drift or PR-AUC.
+
+On the frozen replay data the drift breach persists: every run gives `drift_share` 0.3125 > 0.3
+(5 of 16 features) against the fixed training reference, and a retrain on the same split and data
+re-creates the same model, which is not promoted, so retraining cannot clear it. Keep
+`monitor_late_delivery` paused (its default), or run it with `PROMOTION_MODE=manual` (alert, no
+retrain) for demos. A future change makes drift alert-only and retrains only on a PR-AUC breach.
 
 Model `late_delivery` is one pyfunc: raw contract columns + the three `seller_*_90d` features in,
 P(late) out (`order_features` runs inside). Shape inputs with

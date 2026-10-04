@@ -115,7 +115,7 @@ jobs:
       - run: cd analytics && uv run dbt test --select test_type:unit
       # retail-ml image on the sample gold with a file-based MLflow (sqlite + local artefacts in the
       # container, no server). The default split keeps both classes in val (41 orders, 4 late) and test
-      # (41, 6) on the 200-order sample; promotion is not asserted: LightGBM collapses to the prior there.
+      # (41, 6) on the 200-order sample; promotion is not asserted.
       - name: smoke train late_delivery
         env:
           SMOKE_CHECK: |
