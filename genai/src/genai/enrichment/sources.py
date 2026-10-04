@@ -41,7 +41,8 @@ def _read(root: str, path: str, columns: list[str]) -> pd.DataFrame:
     return df[columns]
 
 
-def _top_reviews(root: str) -> dict[str, tuple[str, ...]]:
+def review_texts(root: str) -> pd.DataFrame:
+    """Distinct non-empty `title. message` per product, longest first: columns product_id, text."""
     reviews = _read(
         root, "sales/order_reviews", ["order_id", "review_comment_title", "review_comment_message"]
     )
@@ -55,7 +56,11 @@ def _top_reviews(root: str) -> dict[str, tuple[str, ...]]:
     joined = joined.assign(length=joined["text"].str.len()).sort_values(
         ["product_id", "length", "text"], ascending=[True, False, True]
     )
-    top = joined.groupby("product_id").head(TOP_REVIEWS)
+    return joined[["product_id", "text"]]
+
+
+def _top_reviews(root: str) -> dict[str, tuple[str, ...]]:
+    top = review_texts(root).groupby("product_id").head(TOP_REVIEWS)
     return {str(pid): tuple(g["text"]) for pid, g in top.groupby("product_id")}
 
 
