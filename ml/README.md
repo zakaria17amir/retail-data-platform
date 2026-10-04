@@ -29,6 +29,16 @@ Model `late_delivery` is one pyfunc: raw contract columns + the three `seller_*_
 P(late) out (`order_features` runs inside). Shape inputs with
 `retail_ml.late_delivery.train.model_inputs` (float numerics, naive-UTC timestamps).
 
+Serving (`uvicorn retail_ml.serving.app:app`): `POST /predict/late-delivery` (the order at approval:
+contract fields minus `is_late`, the delivery timestamp and `order_status`; unknown fields → 422),
+`GET /health` (liveness: always 200, `model_loaded`/`model_version` in the body), `POST /reload`,
+`GET /metrics`. The champion is resolved from the `champion` alias and loaded by version; none →
+`/predict` 503. Seller features come from Feast online; an unseen seller gets NaN for all three,
+the same value training saw for sellers with no snapshot before approval (LightGBM's learned
+missing-value branch), so it is a prediction, not a 500. The Feast registry is only read: if it is
+missing, `/predict` returns 503 rather than letting Feast create one. Load test:
+`locust -f ml/locustfile.py --headless -u 20 -r 5 -t 60s --host http://127.0.0.1:8000`.
+
 Reading the metrics:
 - LightGBM's `val_*` metrics are optimistic: validation picks its early-stopping iteration. Compare
   models on `test_*` (promotion does, re-scoring the champion on the same test rows).
