@@ -1,0 +1,6 @@
+*
+!agents/pyproject.toml
+!agents/uv.lock
+!agents/src
+**/__pycache__
+**/*.pyc
