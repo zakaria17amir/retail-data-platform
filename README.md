@@ -123,6 +123,26 @@ to call `/recommend` after the session's events are online (backlog). Grafana da
 "Retail realtime ML", Redis persistence, e2e test and limits:
 [docs/runbooks/realtime.md](docs/runbooks/realtime.md).
 
+### Cloud (AWS + Snowflake slice)
+
+```sh
+make cloud-validate                   # fmt + validate + tflint for all roots, no credentials
+make cloud-bootstrap                  # once: Terraform state bucket + lock table
+make cloud-up                         # AWS, then Snowflake; fill the snowflake_* outputs into tfvars, run again
+gh workflow run cloud-batch.yml       # EMR silver → Parquet export → Snowpipe → dbt-snowflake gold
+make cloud-down                       # destroy everything except the state bucket
+```
+
+Nothing has been applied yet; `apply` is a manual step. The slice:
+- S3 + EMR Serverless (`emr-spark-8.0.0`);
+- Snowpipe → `RETAIL.SILVER` → dbt → `RETAIL.GOLD` → Power BI;
+- serving on ECS Fargate behind `enable_serving` (off by default);
+- a $25 AWS Budget and a Snowflake resource monitor.
+
+Prerequisites, the two-step apply, the evidence checklist and the cost guard-rails are in
+[docs/runbooks/cloud.md](docs/runbooks/cloud.md). The local → AWS mapping with cost estimates is in
+[docs/cloud-architecture.md](docs/cloud-architecture.md).
+
 ## Status
 
 | # | Phase | Status |
@@ -134,7 +154,7 @@ to call `/recommend` after the session's events are online (backlog). Grafana da
 | 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
 | 5 | Real-time ML | In progress: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
 | 6 | GenAI & agents | Planned |
-| 7 | Cloud | Planned |
+| 7 | Cloud | code + validation done; apply manual, not yet run — Terraform AWS (S3, EMR Serverless, ECS serving, OIDC, Budget) + Snowflake (Snowpipe, dbt-snowflake gold) ([ADR-0009](docs/adr/0009-cloud-slice.md), [mapping](docs/cloud-architecture.md)) |
 | 8 | Polish | Planned |
 
 ## Data attribution

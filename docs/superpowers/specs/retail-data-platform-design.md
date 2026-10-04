@@ -349,22 +349,31 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
 **Principle.** Local is complete; cloud is a cheap, impressive, tear-down-able slice plus a full
 mapping document.
 
-**Deployed slice (batch golden path).** S3 (landing + lakehouse) → EMR Serverless (same silver Spark
-jobs) → Snowpipe auto-ingest (S3 event → SQS → Snowflake raw) → dbt-snowflake (gold) → Power BI on
-Snowflake. ECS Fargate runs the FastAPI serving image (ECR), model artefacts from S3. Secrets Manager,
-CloudWatch, AWS Budget alarm at $25. Cloud DAGs run via scheduled GitHub Actions ("MWAA in production").
+**Deployed slice (batch golden path).** S3 (landing + lakehouse; bronze copied once from local MinIO)
+→ EMR Serverless `emr-spark-8.0.0` (same silver Spark jobs; Spark 4.0.2 / Delta 4.0.0 / Python 3.11 vs
+local 4.0.4 / 4.0.1; Great Expectations stays local) → Parquet export of each silver snapshot to
+`export/silver/<domain>/<table>/<run_id>/` (Snowpipe can't read a Delta log) → Snowpipe auto-ingest
+(S3 event → Snowflake-managed SQS → `RETAIL.SILVER`) → dbt-snowflake (everything in `GOLD`, key-pair
+auth; sources keep only the latest export run) → Power BI on Snowflake. ECS Fargate runs the FastAPI
+serving image (ECR), model artefacts from S3, behind `enable_serving` (default false, `desired_count`
+0). Secrets Manager, CloudWatch, AWS Budget alarm at $25. Cloud DAGs run via scheduled GitHub Actions
+(`cloud-batch.yml`, OIDC; "MWAA in production"). Decisions: ADR-0009.
 
-**Documented-only mapping (`docs/cloud-architecture.md`).** Redpanda → MSK Serverless/Kinesis;
-Debezium → MSK Connect/DMS; MinIO → S3; Airflow → MWAA; Feast online → ElastiCache; MLflow → SageMaker
-Experiments/Registry; serving → SageMaker endpoint or ECS; Ollama/LiteLLM → Bedrock; pgvector → Aurora
-pgvector/OpenSearch; Grafana → CloudWatch/AMG.
+**Documented-only mapping (`docs/cloud-architecture.md`, with rough monthly cost estimates).**
+Postgres → Aurora PostgreSQL; Redpanda → MSK Serverless/Kinesis; Debezium → MSK Connect/DMS; MinIO →
+S3; Airflow → MWAA; Redis/Feast online → ElastiCache; MLflow → SageMaker Experiments/Registry;
+serving → SageMaker endpoint or ECS; Ollama/LiteLLM → Bedrock; pgvector → Aurora pgvector/OpenSearch;
+Chainlit → ECS Fargate; Grafana → CloudWatch/AMG.
 
 **Terraform.** `terraform/aws/` modules `storage`, `iam` (least privilege, GitHub OIDC role),
 `emr-serverless`, `serving` (ECR/ECS/ALB), `observability`, `snowpipe-integration`;
-`terraform/snowflake/` database, `RAW/SILVER/GOLD`, XS warehouse 60 s auto-suspend, roles `LOADER`/
-`TRANSFORMER`/`REPORTER`, stage, pipes, dbt service user. Remote state S3 + DynamoDB; `plan` in CI,
+`terraform/snowflake/` database, `RAW/SILVER/GOLD`, XS warehouse 60 s auto-suspend, resource monitor
+(warehouses only; Snowpipe serverless credits are not capped), roles `LOADER`/`TRANSFORMER`/
+`REPORTER`, stage, pipes, dbt service user; runs as `ACCOUNTADMIN`. Two-step apply (AWS → Snowflake
+→ AWS) because the storage integration and the AWS role reference each other. Remote state S3 with
+`use_lockfile` (the DynamoDB lock table is kept; DynamoDB locking is deprecated); `plan` in CI,
 `apply` manual; `make cloud-up`/`cloud-down`. Evidence (screenshots, query history, cost explorer) in
-`docs/cloud-evidence/`.
+`docs/cloud-evidence/`; steps in `docs/runbooks/cloud.md`.
 
 ## 12. Repository, dev experience, CI/CD, docs
 
