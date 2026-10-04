@@ -64,6 +64,17 @@ def _shopping(message: str, customer: str, thread: str) -> None:
     print(out["answer"])
 
 
+def _eval(suite: str, provider: str, limit: int | None) -> None:
+    if suite == "build-analytics":
+        from agents.evals.golden import build_analytics
+
+        build_analytics()
+        return
+    from agents.evals.runner import run_suite
+
+    run_suite(suite, provider, limit)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="agents")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -76,6 +87,14 @@ def main(argv: list[str] | None = None) -> None:
     shopping.add_argument("--thread", default=None, help="chat/checkpointer thread id")
     shop = sub.add_parser("shop", help="shopping side tables")
     shop.add_argument("action", choices=["init"], help="apply sql/shop.sql (stock, shop_writer)")
+    evals = sub.add_parser("eval", help="build or run an eval golden set")
+    evals.add_argument("suite", choices=["build-analytics", "analytics", "shopping"])
+    evals.add_argument(
+        "--provider",
+        choices=["local", "hosted"],
+        default=os.environ.get("LLM_PROVIDER", "local"),
+    )
+    evals.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
     configure_logging()
     if args.command == "analytics":
@@ -86,3 +105,5 @@ def main(argv: list[str] | None = None) -> None:
         from agents.shopping_agent.db import init_shop, read_dsn
 
         print(f"shop.stock rows: {init_shop(read_dsn())}")
+    elif args.command == "eval":
+        _eval(args.suite, args.provider, args.limit)
