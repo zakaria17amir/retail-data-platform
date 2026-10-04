@@ -84,7 +84,8 @@ jobs:
       # connect-init needs publication olist_cdc, created by `replayer seed`
       - run: make up
       - run: make seed-sample
-      # before `up PROFILE=ingest` so two 4 GiB spark containers never run at once
+      # before `up PROFILE=ingest` to keep memory down; test-ingest later runs `make silver`
+      # beside the bronze app (~13.3 GiB of container limits on the 16 GiB runner)
       - run: make test-spark
       - run: make up PROFILE=ingest
       - env:

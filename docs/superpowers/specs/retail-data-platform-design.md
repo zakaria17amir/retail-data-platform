@@ -128,27 +128,37 @@ Default local run: 5k-product sample; full 32k overnight on GPU.
 
 ## 6. Lakehouse (silver)
 
-Spark batch jobs (`lakehouse/spark/silver/*`) scheduled hourly, reading bronze incrementally via Delta
-Change Data Feed. Silver = cleaned, typed, deduplicated, conformed; one row per entity version.
+Spark batch jobs (`lakehouse/spark/silver/*`) scheduled hourly, reading bronze incrementally with one
+Delta streaming read per bronze table (`trigger(availableNow=True)`, checkpointed, idempotent via Delta
+`txnAppId`/`txnVersion`). Bronze is append-only, so Change Data Feed adds nothing; CDF is reserved for
+tables with updates (ADR-0004). Silver = cleaned, typed, deduplicated, conformed; one row per entity
+version.
 
 **Cleaning rules** are named, pure, unit-tested functions with a `rule_id`:
-CDC envelope collapse (apply c/u/d in order, soft-delete flag) · order-item exact-dup removal ·
+CDC envelope collapse (apply c/u/d in order, soft-delete flag) · CDC exact-duplicate removal (same
+key + LSN; Olist order-item "duplicates" are quantity units and are kept) ·
 timestamp parsing/localisation (`America/Sao_Paulo` → UTC + original) and impossibility flags ·
 geolocation bounding-box clip + zip-prefix centroids · category translation with `unknown` fallback ·
-event casting, `event_id` dedupe, >24 h session rejection. Rejects → `silver/_rejects/<table>/` with
-`rule_id`, enabling "rule X rejected N rows (p %)" reporting.
+event casting, `event_id` dedupe, >24 h session rejection. Rejects → `silver/_rejects/<domain>/<table>/`
+with `rule_id`, `reason`, `record_json`; per-rule counts in `silver/_rule_metrics`, enabling "rule X
+rejected N rows (p %)" reporting. Nothing is dropped silently, except superseded CDC versions of
+current-state tables and, for SCD2 tables, changes that alter no tracked column; these are reconciled
+by distinct key in the quality gates.
 
 **SCD2** for `products`, `customers`, `sellers` (`valid_from`, `valid_to`, `is_current`) driven by
 CDC before/after.
 
-**Layout.** Delta on MinIO `s3a://lakehouse/silver/<domain>/<table>`, date-partitioned where large,
-Z-ordered on join keys; weekly `OPTIMIZE`/`VACUUM` Airflow task.
+**Layout.** Delta on MinIO `s3a://lakehouse/silver/<domain>/<table>`, date-partitioned where large
+(only `events/clickstream`, by `event_date`), Z-ordered on join keys (orders: `customer_id`;
+order_items: `product_id`, `seller_id`; clickstream: `session_id`); VACUUM retains 168 h; weekly
+`OPTIMIZE`/`VACUUM` Airflow task.
 
-**Quality gates (Great Expectations, after each silver load).** Schema, row-count tolerance vs bronze
-minus rejects, referential integrity, distribution checks (price > 0, freight ≤ p99 history),
-freshness SLA. Critical failures block downstream dbt; warnings land in `dq_results` (Delta) and a
-Power BI quality page. No full data catalog (DataHub etc.) — dbt docs + GE data docs + diagram cover
-lineage; catalog is a stretch item.
+**Quality gates (Great Expectations 1.x on pandas batches read with `deltalake`, no Spark; after each
+silver load).** Schema, row-count tolerance vs bronze minus rejects, referential integrity,
+distribution checks (price > 0, freight ≤ p99 history), freshness SLA. Critical failures block
+downstream dbt. Every check result (critical and warning) is appended to `silver/_dq_results` (Delta)
+and feeds a Power BI quality page. No full data catalog (DataHub etc.) — dbt docs + `_dq_results` +
+diagram cover lineage; catalog is a stretch item.
 
 **Tests.** Each rule on tiny DataFrames with local Spark in CI; integration test asserts silver
 invariants on a replayed day.

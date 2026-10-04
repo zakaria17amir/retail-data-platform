@@ -15,9 +15,18 @@ make status                                               # bronze + silver coun
 ```
 
 `make silver` runs the job in a one-off `spark` container. Each bronze table is read incrementally
-(`availableNow`, checkpoint `_checkpoints/silver/<domain>_<table>`), so a rerun with no new bronze
-data changes nothing. Table order matters for `catalog/products` (needs `catalog/categories`) and
-`geo/zip_centroids` (rebuilt from `geo/geolocation_points`).
+(`availableNow`, checkpoint `_checkpoints/silver/<domain>_<table>`; events: one per type,
+`events_clickstream_<type>` for `add_to_cart`, `checkout_started`, `page_view`, `product_view`,
+`search`), so a rerun
+with no new bronze data changes nothing. Table order matters for `catalog/products` (needs
+`catalog/categories`) and `geo/zip_centroids` (rebuilt from `geo/geolocation_points`). With no bronze
+events source yet, the job creates an empty `events/clickstream`, so `make quality` warns
+`freshness observed=empty` until the first events arrive.
+
+Memory: the silver container is limited to 4 GiB and peaks at ~3 GiB on full data (`maintain` ~3.4 GiB);
+next to the `ingest` profile the container limits add up to ~13.3 GiB. Run `make silver` before
+`make maintain` after a pause of more than 7 days: VACUUM (168 h) can remove bronze files a stalled
+silver stream still points at.
 
 `make quality` runs on the host (`deltalake` + pandas, no Spark), prints one
 `PASS|FAIL <severity> <table> <expectation> observed=…` line per check and appends them to
@@ -65,3 +74,9 @@ make silver
 ```
 
 Bronze and its checkpoints are untouched; the next `make silver` rebuilds silver from all of bronze.
+
+Deleting only `_checkpoints/silver` (keeping the tables) also reprocesses all of bronze: silver
+converges, but rejects and rule metrics are appended again, and every record already in silver is
+re-rejected (`cdc_exact_duplicate` "… (already in silver)", `event_duplicate` "event_id already in
+silver"). Clear
+both unless that duplicate reject history is what you want.
