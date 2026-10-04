@@ -1,0 +1,65 @@
+table rpt_data_quality
+
+	column check_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: check_type
+
+	column run_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: run_id
+
+	column checked_at
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: checked_at
+
+	column table_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: table_name
+
+	column check_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: check_name
+
+	column severity
+		dataType: string
+		summarizeBy: none
+		sourceColumn: severity
+
+	column rows_in
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: rows_in
+
+	column rows_rejected
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: rows_rejected
+
+	column pct_rejected
+		dataType: double
+		summarizeBy: none
+		sourceColumn: pct_rejected
+
+	column success
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: success
+
+	column observed_value
+		dataType: string
+		summarizeBy: none
+		sourceColumn: observed_value
+
+	partition rpt_data_quality = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_data_quality.parquet"))
+				in
+				    Source

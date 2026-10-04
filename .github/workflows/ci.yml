@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lint-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -24,6 +24,12 @@ jobs:
       - run: uv sync --locked --all-packages --group dev
       - run: make lint
       - run: make test
+      # local manifest in analytics/target/ is what the DAG tests (Cosmos DBT_MANIFEST) load
+      - run: make dbt-parse
+      - run: make sqlfluff
+      - env:
+          CI: "true"
+        run: uv run --locked --project orchestration pytest orchestration/tests
 
   integration:
     needs: lint-test
@@ -94,6 +100,9 @@ jobs:
           set -o pipefail
           ALLOW_RESEED=1 make test-ingest | tee ingest.txt
           grep -q ' passed' ingest.txt && ! grep -q ' skipped' ingest.txt
+      # silver now holds the sample; build runs the data and unit tests (warn severity does not fail)
+      - run: make gold
+      - run: cd analytics && uv run dbt test --select test_type:unit
       - if: failure()
         run: docker compose --profile ingest logs --tail 100
       - if: always()

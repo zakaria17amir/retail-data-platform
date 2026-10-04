@@ -1,0 +1,33 @@
+table fct_events
+
+	column event_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: event_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column event_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: event_type
+
+	column event_count
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: event_count
+
+	column session_count
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: session_count
+
+	partition fct_events = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_events.parquet")),
+				    NonNullRows = Table.SelectRows(Source, each [event_date] <> null)
+				in
+				    NonNullRows

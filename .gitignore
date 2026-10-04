@@ -25,8 +25,10 @@ volumes/
 
 # dbt
 analytics/target/
+analytics/target-snowflake/
 analytics/dbt_packages/
 analytics/logs/
+analytics/.user.yml
 
 # Airflow
 orchestration/logs/
@@ -55,6 +57,10 @@ Thumbs.db
 
 # Kaggle raw data
 data/raw/
+
+# Gold Parquet and the local DuckDB warehouse
+data/gold/
+data/warehouse/
 
 # Spark local artefacts
 spark-warehouse/

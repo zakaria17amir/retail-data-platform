@@ -1,0 +1,59 @@
+relationship fct_orders_customer_sk
+	fromColumn: fct_orders.customer_sk
+	toColumn: dim_customer.customer_sk
+
+relationship fct_orders_order_purchase_date
+	fromColumn: fct_orders.order_purchase_date
+	toColumn: dim_date.date_day
+
+relationship dim_customer_zip_code_prefix
+	fromColumn: dim_customer.customer_zip_code_prefix
+	toColumn: dim_geo.zip_code_prefix
+
+relationship fct_order_items_order_id
+	fromColumn: fct_order_items.order_id
+	toColumn: fct_orders.order_id
+
+relationship fct_order_items_product_sk
+	fromColumn: fct_order_items.product_sk
+	toColumn: dim_product.product_sk
+
+relationship fct_order_items_seller_sk
+	fromColumn: fct_order_items.seller_sk
+	toColumn: dim_seller.seller_sk
+
+relationship fct_payments_order_id
+	fromColumn: fct_payments.order_id
+	toColumn: fct_orders.order_id
+
+relationship fct_payments_payment_type
+	fromColumn: fct_payments.payment_type
+	toColumn: dim_payment_type.payment_type
+
+relationship fct_reviews_order_id
+	fromColumn: fct_reviews.order_id
+	toColumn: fct_orders.order_id
+
+relationship fct_sessions_session_date
+	fromColumn: fct_sessions.session_date
+	toColumn: dim_date.date_day
+
+relationship fct_events_event_date
+	fromColumn: fct_events.event_date
+	toColumn: dim_date.date_day
+
+relationship rpt_daily_sales_order_purchase_date
+	fromColumn: rpt_daily_sales.order_purchase_date
+	toColumn: dim_date.date_day
+
+relationship rpt_funnel_session_date
+	fromColumn: rpt_funnel.session_date
+	toColumn: dim_date.date_day
+
+relationship rpt_delivery_sla_order_month
+	fromColumn: rpt_delivery_sla.order_month
+	toColumn: dim_date.date_day
+
+relationship rpt_product_performance_order_month
+	fromColumn: rpt_product_performance.order_month
+	toColumn: dim_date.date_day

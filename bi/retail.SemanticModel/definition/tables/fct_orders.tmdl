@@ -1,0 +1,171 @@
+table fct_orders
+
+	measure Orders =
+			// dbt metric: orders (analytics/models/metrics/)
+			CALCULATE(
+				DISTINCTCOUNT(fct_orders[order_id]),
+				KEEPFILTERS(fct_orders[is_revenue_order] = TRUE())
+			)
+		formatString: #,##0
+
+	measure AOV =
+			// dbt metric: aov (analytics/models/metrics/)
+			DIVIDE([Revenue], [Orders])
+		formatString: #,##0.00
+
+	measure 'Delivered Orders' =
+			// dbt metric: delivered_orders (analytics/models/metrics/)
+			CALCULATE(
+				COUNTROWS(fct_orders),
+				KEEPFILTERS(fct_orders[is_delivered] = TRUE())
+			)
+		formatString: #,##0
+
+	measure 'Late Delivered Orders' =
+			// dbt metric: late_delivered_orders (analytics/models/metrics/)
+			CALCULATE(
+				COUNTROWS(fct_orders),
+				KEEPFILTERS(fct_orders[is_late] = TRUE())
+			)
+		formatString: #,##0
+
+	measure 'Late Delivery Rate' =
+			// dbt metric: late_delivery_rate (analytics/models/metrics/)
+			DIVIDE([Late Delivered Orders], [Delivered Orders])
+		formatString: 0.00%
+
+	column order_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column customer_sk
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_sk
+
+	column customer_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column customer_unique_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_unique_id
+
+	column customer_order_seq
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: customer_order_seq
+
+	column is_first_order
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_first_order
+
+	column order_status
+		dataType: string
+		summarizeBy: none
+		sourceColumn: order_status
+
+	column order_purchase_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: order_purchase_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column order_purchase_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: order_purchase_ts_utc
+
+	column order_approved_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: order_approved_ts_utc
+
+	column order_delivered_carrier_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: order_delivered_carrier_ts_utc
+
+	column order_delivered_customer_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: order_delivered_customer_ts_utc
+
+	column order_estimated_delivery_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: order_estimated_delivery_ts_utc
+
+	column purchase_to_approved_hours
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: purchase_to_approved_hours
+
+	column approved_to_carrier_hours
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: approved_to_carrier_hours
+
+	column carrier_to_customer_hours
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: carrier_to_customer_hours
+
+	column purchase_to_customer_hours
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: purchase_to_customer_hours
+
+	column is_delivered
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_delivered
+
+	column is_late
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_late
+
+	column is_deleted
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_deleted
+
+	column is_revenue_order
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_revenue_order
+
+	column item_count
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: item_count
+
+	column item_revenue
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: item_revenue
+
+	column payment_value
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: payment_value
+
+	partition fct_orders = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_orders.parquet"))
+				in
+				    Source

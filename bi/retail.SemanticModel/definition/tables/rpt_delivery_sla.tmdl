@@ -1,0 +1,42 @@
+table rpt_delivery_sla
+
+	column order_month
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: order_month
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column customer_state
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_state
+
+	column delivered_orders
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: delivered_orders
+
+	column late_orders
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: late_orders
+
+	column late_rate
+		dataType: double
+		summarizeBy: none
+		sourceColumn: late_rate
+
+	column avg_delivery_hours
+		dataType: double
+		summarizeBy: none
+		sourceColumn: avg_delivery_hours
+
+	partition rpt_delivery_sla = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_delivery_sla.parquet"))
+				in
+				    Source

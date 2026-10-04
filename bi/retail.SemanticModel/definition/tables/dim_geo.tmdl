@@ -1,0 +1,34 @@
+table dim_geo
+
+	column zip_code_prefix
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: zip_code_prefix
+
+	column lat
+		dataType: double
+		summarizeBy: none
+		sourceColumn: lat
+
+	column lng
+		dataType: double
+		summarizeBy: none
+		sourceColumn: lng
+
+	column n_points
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: n_points
+
+	column state
+		dataType: string
+		summarizeBy: none
+		sourceColumn: state
+
+	partition dim_geo = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\dim_geo.parquet"))
+				in
+				    Source

@@ -1,0 +1,14 @@
+table dim_payment_type
+
+	column payment_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: payment_type
+
+	partition dim_payment_type = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\dim_payment_type.parquet"))
+				in
+				    Source

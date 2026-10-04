@@ -1,0 +1,77 @@
+semantic_models:
+  - name: fct_order_items
+    description: Order item units; revenue is measured here only, never from payments.
+    model: ref('fct_order_items')
+    defaults:
+      agg_time_dimension: order_purchase_date
+    primary_entity: order_item
+    entities:
+      - name: order
+        type: foreign
+        expr: order_id
+    dimensions:
+      - name: order_purchase_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: revenue
+        description: price + freight_value of revenue-order items.
+        agg: sum
+        expr: case when is_revenue_order then item_revenue else 0 end
+
+  - name: fct_orders
+    description: Orders of every status.
+    model: ref('fct_orders')
+    defaults:
+      agg_time_dimension: order_purchase_date
+    entities:
+      - name: order
+        type: primary
+        expr: order_id
+    dimensions:
+      - name: order_purchase_date
+        type: time
+        type_params:
+          time_granularity: day
+      - name: order_status
+        type: categorical
+    measures:
+      - name: revenue_orders
+        description: Distinct revenue orders (the AOV denominator).
+        agg: count_distinct
+        expr: case when is_revenue_order then order_id end
+      - name: delivered_orders
+        agg: sum
+        expr: case when is_delivered then 1 else 0 end
+        create_metric: true
+      - name: late_delivered_orders
+        description: Delivered after the estimated delivery timestamp.
+        agg: sum
+        expr: case when is_late then 1 else 0 end
+        create_metric: true
+
+  - name: fct_sessions
+    description: Clickstream sessions, anonymous sessions included.
+    model: ref('fct_sessions')
+    defaults:
+      agg_time_dimension: session_date
+    entities:
+      - name: session
+        type: primary
+        expr: session_id
+    dimensions:
+      - name: session_date
+        type: time
+        type_params:
+          time_granularity: day
+    measures:
+      - name: sessions
+        agg: sum
+        expr: "1"
+        create_metric: true
+      - name: checkout_sessions
+        description: Sessions with a checkout_started event.
+        agg: sum
+        expr: case when has_checkout then 1 else 0 end
+        create_metric: true

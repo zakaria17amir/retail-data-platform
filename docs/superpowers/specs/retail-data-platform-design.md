@@ -166,7 +166,10 @@ invariants on a replayed day.
 ## 7. Analytics (gold)
 
 **dbt project `analytics/`**, dbt-duckdb reading silver Delta (`delta_scan`), multi-target
-(`local` DuckDB, `snowflake`) from day one with dispatch macros for syntax differences.
+(`local` DuckDB, `snowflake`) from day one: every model compiles for both targets (`dbt parse` in
+CI) and dialect gaps live in dispatch macros. dbt-snowflake runs in an isolated, pinned `uv tool`
+environment (it would downgrade shared dependencies in the workspace); the Snowflake target is first
+executed in Phase 7.
 
 - `staging/` one view per silver table; `intermediate/` order lifecycle durations, sessionisation,
   customer order sequences; `marts/` Kimball star schema:
@@ -176,20 +179,31 @@ invariants on a replayed day.
   `rpt_product_performance`, `rpt_funnel`, `rpt_delivery_sla`, `rpt_data_quality`.
 - `metrics/` dbt semantic layer (MetricFlow): revenue, AOV, conversion, late-delivery rate — one
   definition shared by Power BI, ML and the analytics agent.
-- Marts materialised as `external` Parquet under `gold/<mart>/` (Power BI reads the folder; avoids
+- Marts (and the star schema facts/dims) materialised as `external` Parquet, one file per model at
+  `${GOLD_DIR:-data/gold}/<model>.parquet` (Power BI reads the folder; avoids
   DuckDB single-writer locks across WSL2); staging/intermediate as DuckDB views/tables; Snowflake as
   clustered tables.
+- SCD2 dims join facts point-in-time on `valid_from ≤ fact_ts < valid_to`; a key's first version also
+  covers facts before its `valid_from` (CDC-created keys carry processing-time `valid_from`), so no
+  fact row is dropped. Revenue = `sum(price + freight_value)` over items of orders not
+  `canceled`/`unavailable`, not CDC-deleted and with item revenue > 0; AOV = revenue / those orders.
 - Tests/docs: generic key/relationship tests, `dbt-expectations`, dbt unit tests for intermediate
-  models, `dbt docs` on GitHub Pages; Elementary optional.
+  models; `dbt docs` on GitHub Pages (`docs.yml`) and Elementary (optional) are deferred to Phase 8
+  (Polish).
 
-**Airflow 3 (`orchestration/`)**, LocalExecutor, dataset-aware DAGs: `ingest_health` (15 min),
+**Airflow 3 (`orchestration/`, a separate uv project locked against Airflow's constraints)**, one
+`airflow standalone` container with LocalExecutor (production would split scheduler, API server, DAG
+processor and triggerer); Spark tasks via DockerOperator over the host Docker socket; dataset-aware
+DAGs: `ingest_health` (15 min),
 `silver_hourly` (Spark → GE → publishes `silver`), `gold_daily` (triggered by `silver`; `dbt build`
 via Cosmos; publishes `gold`), `lakehouse_maintenance` (weekly). Later DAGs attach to the same
 datasets. Failures alert via webhook. DAG integrity tests in CI.
 
-**Power BI (`bi/`).** One `.pbix` imported from gold Parquet: Executive, Funnel, Customers (RFM,
-cohorts), Products/Sellers, Delivery SLA, Forecast vs Actual, Data Quality. DAX mirrors dbt metrics.
-Committed with screenshots and a README GIF; Snowflake as second data source for the cloud path.
+**Power BI (`bi/`).** A PBIP project (TMDL semantic model + PBIR report, text in git so it diffs)
+importing the gold Parquet files: Executive, Funnel, Customers (RFM, cohorts), Products/Sellers,
+Delivery SLA, Forecast vs Actual, Data Quality. DAX measures mirror the dbt metrics one-to-one. Report
+pages, an optional `retail.pbix` export and screenshots are authored by hand in Power BI Desktop; the
+README GIF lands in Phase 8 and Snowflake as a second data source with the Phase 7 cloud path.
 
 ## 8. Batch ML and MLOps
 
@@ -304,7 +318,7 @@ retail-data-platform/
 ├── ds/             notebooks/ reports/ model_cards/
 ├── agents/         core/ analytics_agent/ shopping_agent/ evals/ ui/
 ├── genai/          enrichment/ rag/
-├── bi/             retail.pbix screenshots/
+├── bi/             retail.pbip retail.SemanticModel/ retail.Report/ screenshots/
 ├── terraform/      aws/ snowflake/
 ├── observability/  prometheus/ grafana/
 ├── docs/           architecture.md adr/ cloud-architecture.md runbooks/ superpowers/

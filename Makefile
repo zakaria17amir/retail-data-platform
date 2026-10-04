@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -87,3 +87,20 @@ maintain:
 
 reset-bronze:
 	sh ingestion/reset-bronze.sh $(or $(SEED),seed)
+
+# dbt-duckdb creates neither the DuckDB file's parent directory nor GOLD_DIR; paths resolve from analytics/
+DBT_WAREHOUSE_DIR = mkdir -p "$$(dirname "$${DUCKDB_PATH:-../data/warehouse/retail.duckdb}")" "$${GOLD_DIR:-../data/gold}"
+# dbt-snowflake stays out of the workspace (it would downgrade certifi for every member): ephemeral pinned env
+DBT_SNOWFLAKE = uv tool run --python 3.12 --exclude-newer 2026-09-27T00:00:00Z --from 'dbt-core==1.12.5' --with 'dbt-snowflake==1.12.1' dbt
+
+gold:
+	cd analytics && $(DBT_WAREHOUSE_DIR) && uv run dbt deps && uv run dbt build --target local
+
+dbt-parse:
+	cd analytics && $(DBT_WAREHOUSE_DIR) && uv run dbt deps && uv run dbt parse --target local && $(DBT_SNOWFLAKE) parse --target snowflake --target-path target-snowflake
+
+sqlfluff:
+	cd analytics && uv run sqlfluff lint models
+
+airflow-cli:
+	docker compose exec airflow airflow $(ARGS)

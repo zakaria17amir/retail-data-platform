@@ -2,7 +2,7 @@ name: retail
 
 services:
   postgres:
-    profiles: [core, ingest, demo]
+    profiles: [core, ingest, demo, analytics]
     image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
@@ -32,7 +32,7 @@ services:
     networks: [retail]
 
   minio:
-    profiles: [core, ingest]
+    profiles: [core, ingest, analytics]
     # Silo (pgsty), maintained MinIO fork; minio/minio was removed from Docker Hub, see ADR-0002
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
@@ -56,7 +56,7 @@ services:
     networks: [retail]
 
   minio-init:
-    profiles: [core, ingest]
+    profiles: [core, ingest, analytics]
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
     depends_on:
       minio:
@@ -268,6 +268,108 @@ services:
       resources:
         limits:
           memory: 512m
+    networks: [retail]
+
+  airflow-init:
+    profiles: [analytics]
+    build: orchestration
+    image: retail-airflow:3.3.2
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
+    entrypoint:
+      - bash
+      - -euc
+      - |
+        : "$${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}"
+        : "$${AIRFLOW__CORE__FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}"
+        python -c '
+        import os, psycopg2
+        c = psycopg2.connect(host="postgres", user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"], dbname=os.environ["POSTGRES_DB"])
+        c.autocommit = True
+        cur = c.cursor()
+        cur.execute("select 1 from pg_database where datname = %s", ("airflow",))
+        if cur.fetchone() is None:
+            cur.execute("create database airflow")
+        '
+        airflow db migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks: [retail]
+
+  airflow:
+    profiles: [analytics]
+    build: orchestration
+    image: retail-airflow:3.3.2
+    # standalone forces SimpleAuthManager; seeding its passwords file stops it generating a random admin password
+    command:
+      - bash
+      - -euc
+      - |
+        : "$${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}"
+        : "$${AIRFLOW__CORE__FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}"
+        : "$${HOST_REPO_DIR:?set HOST_REPO_DIR in .env (PWD is not exported by this shell)}"
+        (umask 077 && python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
+          > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE")
+        exec airflow standalone
+    environment:
+      <<: *airflow-env
+      # LocalExecutor pre-forks one worker per parallelism slot (default 32), too much for the 2g limit
+      AIRFLOW__CORE__PARALLELISM: "4"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
+      # host path of the repo: DockerOperator bind mounts are resolved by the host daemon, not this container
+      HOST_REPO_DIR: ${HOST_REPO_DIR:-$PWD}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      # browser-facing URL for log links; the execution API default derives from it, so pin that to the in-container port
+      AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8088}
+      AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://localhost:8080/execution/
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      MINIO_ENDPOINT: http://minio:9000
+      KAFKA_CONNECT_URL: http://kafka-connect:8083
+      BRONZE_FRESHNESS_HOURS: ${BRONZE_FRESHNESS_HOURS:-24}
+      GOLD_MIN_INTERVAL_HOURS: ${GOLD_MIN_INTERVAL_HOURS:-20}
+      # absolute: Cosmos runs dbt from a temp copy of the project, so the ../data defaults would break
+      DUCKDB_PATH: /opt/airflow/data/warehouse/retail.duckdb
+      GOLD_DIR: /opt/airflow/data/gold
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
+    volumes:
+      - ./orchestration/dags:/opt/airflow/dags
+      - ./analytics:/opt/airflow/analytics
+      - ./data:/opt/airflow/data
+      - ./lakehouse:/opt/airflow/lakehouse
+      - /var/run/docker.sock:/var/run/docker.sock # root-equivalent host access; local dev only
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     networks: [retail]
 
 configs:

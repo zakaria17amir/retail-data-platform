@@ -1,0 +1,43 @@
+table rpt_funnel
+
+	column session_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: session_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column sessions
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: sessions
+
+	column product_view_sessions
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: product_view_sessions
+
+	column add_to_cart_sessions
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: add_to_cart_sessions
+
+	column checkout_sessions
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: checkout_sessions
+
+	column conversion_rate
+		dataType: double
+		summarizeBy: none
+		sourceColumn: conversion_rate
+
+	partition rpt_funnel = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_funnel.parquet")),
+				    NonNullRows = Table.SelectRows(Source, each [session_date] <> null)
+				in
+				    NonNullRows
