@@ -54,8 +54,10 @@ LOCUST_SESSION_IDS=<id1>,<id2> make recommend-load   # 20 users, 60 s; LOCUST_UN
 null until Phase 6 enrichment. Live sessions come from `make sim` (session ids are in the
 `events.*` topics); `make sim SIM_ARGS="--feedback"` also calls `/recommend` after each product view
 and emits `recommendation_shown/clicked` at the trigger's dataset time → `make silver && make gold` →
-`rpt_recommendation_ctr` / metric `recommendation_ctr`. Measured at 20 users: p50 42 / p95 140 ms
-(target 50 ms missed; at 5 users p50 24 / p95 54 ms).
+`rpt_recommendation_ctr` / metric `recommendation_ctr`. These rows are all `global_popularity` with
+`model_version` null: the sim calls `/recommend` before the session's events reach Kafka (see Known
+limits). Measured at 20 users: p50 42 / p95 140 ms (target 50 ms missed; at 5 users p50 24 / p95
+54 ms).
 
 ## Stream scoring
 
@@ -87,6 +89,18 @@ online store and candidates (`docker compose exec redis redis-cli dbsize` before
 `redis-cli info persistence | grep aof_enabled` → 1). After `make destroy` (drops volumes) rerun
 `make ml ARGS="materialize"` and `make ml ARGS="publish-candidates"`.
 
+Feast online keys (sessions, popularity, `seller_stats`) expire 7 days of wall clock after their last
+write (`key_ttl_seconds` in `ml/feature_repo/feature_store.yaml`). `cand:*` / `pop:*` have no TTL.
+Run `make ml ARGS="materialize"` (or DAG `feast_materialize`, which runs on each gold publish) at
+least weekly, otherwise `stream-score` reads null seller features. Within those 7 days Redis still
+grows: a fresh spark-realtime checkpoint pushes every session in bronze, and each
+`replayer live --loop` iteration adds a new set of session ids. Redis is `noeviction` at 640 MB, so
+when it is full Feast `/push` returns 500 (the spark-realtime query dies) and `publish-candidates`
+fails. Check with `docker compose exec redis redis-cli info memory | grep used_memory_human`. To
+recover: `docker compose exec redis redis-cli flushdb`, then `make ml ARGS="materialize"`,
+`make ml ARGS="publish-candidates"`, and `docker compose --profile realtime restart spark-realtime`
+if its query died. Live sessions and popularity then refill from the stream.
+
 ## E2E test
 
 ```sh
@@ -113,4 +127,18 @@ connector drop to `UNASSIGNED`; `docker compose --profile ingest restart kafka-c
 - At approval the replayer has often not yet written `order_payments` (payment features null);
   seller features are the Feast online snapshot, not point-in-time.
 - Replay windows must move forward in dataset time (bronze and spark-realtime watermarks).
+- spark-realtime watermarks are 48 h for sessions (the bronze watermark) and 49 h for popularity
+  (`SESSION_WATERMARK` / `POPULARITY_WATERMARK`).
+  Bronze commits one event type's table at a time, ~20 dataset h apart at `REPLAY_SPEED=3600`, so a
+  shorter watermark silently dropped the later-committed types' rows. Session state lives ≤ 48.5
+  dataset h: under a minute of wall clock at 3600×, but 2 days of open sessions at 1×.
+- Popularity pushes use `event_ts` = newest clock hour + `views_24h + carts_24h` µs, so every count
+  change is strictly newer and Feast keeps it.
+- Live feedback measures only the cold-start strategy. `make sim SIM_ARGS="--feedback"` calls
+  `/recommend` while it generates a session, before the session's events reach Kafka (and
+  session → Feast takes 20–45 s), so the session is unknown and the strategy is `global_popularity`.
+  Rerank CTR per model version needs the sim to call `/recommend` after the session's events are
+  online (backlog).
 - Feedback events count in `fct_sessions.event_count` / `fct_events`.
+- Feast online keys expire after 7 days of wall clock; re-materialize `seller_stats` at least weekly
+  (see Redis persistence).

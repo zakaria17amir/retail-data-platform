@@ -5,6 +5,9 @@ registry: ${FEAST_REGISTRY_PATH}
 online_store:
   type: redis
   connection_string: ${REDIS_URL}
+  # wall-clock expiry so pushed sessions don't fill the noeviction Redis; also expires seller_stats,
+  # which the weekly-or-faster materialize DAGs rewrite
+  key_ttl_seconds: 604800
 offline_store:
   type: file
 entity_key_serialization_version: 3

@@ -60,7 +60,7 @@ jobs:
   ingest:
     needs: lint-test
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

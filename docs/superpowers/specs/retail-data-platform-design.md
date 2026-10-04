@@ -289,11 +289,17 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
   380 ms (Postgres commit → scored); approve → `order_risk` 0.52 s and 1.28 s in two e2e runs.
 - *Session features* come from the bronze events Delta tables (`spark-realtime`), not Kafka. Spark
   forbids `session_window` in update mode, so sessions are `applyInPandasWithState` keyed by
-  `session_id` (30-min gap, 2 h watermark; pandas/pyarrow added to the Spark image). The pushed
+  `session_id` (30-min gap; pandas/pyarrow added to the Spark image). The watermark is 48 h, the
+  bronze watermark: bronze commits one event type's table at a time, ~20 dataset h apart at
+  `REPLAY_SPEED=3600`, and a shorter watermark would drop the later-committed types' rows. The pushed
   `event_ts` is last event + `n_events` ms, strictly increasing per update, because per-type bronze
   tables deliver a session's events out of order and Feast's Redis store skips non-newer writes.
-  Popularity `views_1h` is the newest clock hour of 24 h windows sliding by 1 h (coarse).
-- *Feast push server* `feast-server`; Redis on a named volume with AOF.
+  Popularity `views_1h` is the newest clock hour of 24 h windows sliding by 1 h (coarse); 49 h
+  watermark; pushed `event_ts` = that hour's start + `views_24h + carts_24h` µs, so it is strictly
+  newer on every count change.
+- *Feast push server* `feast-server`; Redis on a named volume with AOF. Online keys have a 7-day
+  wall-clock TTL (`key_ttl_seconds`), which bounds the pushed sessions in the `noeviction` Redis. It
+  also applies to `seller_stats`, so `materialize` must run at least weekly.
 - *Training data:* the ranker trains on offline-simulated history (`clickstream-sim generate`, 2.03M
   events from gold orders), not on accumulated live clickstream. Candidates = co-visitation + implicit
   ALS + category/global popularity padding, retrained and republished when gold publishes (DAGs
@@ -307,7 +313,10 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
   ~5 ms + predict ~7 ms).
 - *Feedback:* `recommendation_shown/clicked` are stamped with the trigger's dataset time (forward note
   above); CTR per model version in gold `rpt_recommendation_ctr` / metric `recommendation_ctr` and
-  Power BI.
+  Power BI. Live feedback currently measures only the cold-start strategy: the sim calls
+  `/recommend` while it generates a session, before the session's events reach Kafka, so the session
+  is unknown and the strategy is `global_popularity`. Rerank CTR per model version needs the sim to
+  call `/recommend` after the session's events are online (backlog).
 - *Dependencies:* `implicit` (ml), `polars` (clickstream-sim), pandas/pyarrow (Spark image),
   `confluent-kafka[avro]`, `psycopg[binary]`, `deltalake` (ml image); ml-cli memory 3g.
 

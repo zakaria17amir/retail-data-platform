@@ -6,7 +6,7 @@ from conftest import local_store
 from feast.data_source import PushMode
 
 from retail_ml.config import redis_connection
-from retail_ml.data import historical_seller_features, materialize
+from retail_ml.data import feature_store, historical_seller_features, materialize
 from retail_ml.features import SELLER_FEATURES
 
 
@@ -29,6 +29,11 @@ def test_redis_url_becomes_feast_connection_string(
     else:
         monkeypatch.setenv("REDIS_URL", url)
     assert redis_connection() == expected
+
+
+def test_online_keys_expire_after_a_week(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEAST_REGISTRY_PATH", str(tmp_path / "registry.db"))
+    assert feature_store().config.online_store.key_ttl_seconds == 7 * 24 * 3600
 
 
 def _ts(s: str) -> pd.Timestamp:

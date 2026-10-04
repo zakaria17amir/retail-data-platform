@@ -63,10 +63,13 @@ def _reachable(url: str) -> bool:
         return False
 
 
-if os.environ.get("ALLOW_RESEED") != "1":
-    pytest.skip("set ALLOW_RESEED=1 to write test rows to the stack", allow_module_level=True)
-if not (_reachable(f"{FEAST_URL}/health") and _reachable(f"{RECOMMEND_URL}/health")):
-    pytest.skip("feast-server / serving not reachable (PROFILE=realtime)", allow_module_level=True)
+# a fixture, not a module-level skip: `-m ingest` deselects these tests without reporting a skip
+@pytest.fixture(scope="module", autouse=True)
+def _realtime_stack() -> None:
+    if os.environ.get("ALLOW_RESEED") != "1":
+        pytest.skip("set ALLOW_RESEED=1 to write test rows to the stack")
+    if not (_reachable(f"{FEAST_URL}/health") and _reachable(f"{RECOMMEND_URL}/health")):
+        pytest.skip("feast-server / serving not reachable (PROFILE=realtime)")
 
 
 def _post(url: str, body: dict[str, Any]) -> Any:
