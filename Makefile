@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain airflow-cli
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -87,3 +87,6 @@ maintain:
 
 reset-bronze:
 	sh ingestion/reset-bronze.sh $(or $(SEED),seed)
+
+airflow-cli:
+	docker compose exec airflow airflow $(ARGS)
