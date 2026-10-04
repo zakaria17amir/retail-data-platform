@@ -706,6 +706,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
       FEAST_SERVER_URL: http://feast-server:6566
+      SESSION_WATERMARK: ${SESSION_WATERMARK:-48 hours}
+      POPULARITY_WATERMARK: ${POPULARITY_WATERMARK:-49 hours}
     volumes:
       - ./lakehouse/spark:/opt/lakehouse:ro
     depends_on:
