@@ -35,13 +35,34 @@ def _analytics(question: str, thread: str) -> None:
         print(f"Chart: {out['chart']}")
 
 
+def _eval(suite: str, provider: str, limit: int | None) -> None:
+    if suite == "build-analytics":
+        from agents.evals.golden import build_analytics
+
+        build_analytics()
+        return
+    from agents.evals.runner import run_suite
+
+    run_suite(suite, provider, limit)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="agents")
     sub = parser.add_subparsers(dest="command", required=True)
     analytics = sub.add_parser("analytics", help="ask the analytics agent one question")
     analytics.add_argument("question")
     analytics.add_argument("--thread", default=None, help="checkpointer thread id")
+    evals = sub.add_parser("eval", help="build or run an eval golden set")
+    evals.add_argument("suite", choices=["build-analytics", "analytics", "shopping"])
+    evals.add_argument(
+        "--provider",
+        choices=["local", "hosted"],
+        default=os.environ.get("LLM_PROVIDER", "local"),
+    )
+    evals.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
     configure_logging()
     if args.command == "analytics":
         _analytics(args.question, args.thread or uuid.uuid4().hex)
+    elif args.command == "eval":
+        _eval(args.suite, args.provider, args.limit)

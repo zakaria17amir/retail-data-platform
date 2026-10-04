@@ -777,6 +777,8 @@ services:
       LITELLM_URL: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-local}
+      # LangGraph checkpointer (schema agents); the Chainlit thread id is the checkpointer thread
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       RAG_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # restricted order-writer role created by sql/shop.sql
       SHOP_DSN: postgresql://shop_writer:shop_writer@postgres:5432/${POSTGRES_DB}
@@ -784,11 +786,13 @@ services:
       RECOMMEND_URL: http://serving:8000
       KAFKA_BOOTSTRAP: redpanda:9092
       SCHEMA_REGISTRY_URL: http://redpanda:8081
-      GOLD_DIR: /data/gold
+      GOLD_DIR: /app/data/gold
     ports:
       - "127.0.0.1:8010:8010"
     volumes:
-      - ./data:/data:ro
+      - ./data/gold:/app/data/gold:ro
+      # semantic_manifest.json + manifest.json for MetricFlow and get_model_docs
+      - ./analytics/target:/app/analytics/target:ro
     depends_on:
       litellm:
         condition: service_healthy
