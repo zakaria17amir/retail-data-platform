@@ -14,7 +14,7 @@ x-monitor-env: &monitor-env
 services:
   postgres:
     profiles: [core, ingest, demo, analytics, ml, realtime]
-    image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
+    image: pgvector/pgvector:0.8.6-pg16-bookworm@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     command:
       - postgres
       - -c
@@ -602,7 +602,7 @@ services:
 
   realtime-sql-init:
     profiles: [realtime]
-    image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
+    image: pgvector/pgvector:0.8.6-pg16-bookworm@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
     command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/sql/realtime.sql"]
     environment:
       PGHOST: postgres
