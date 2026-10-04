@@ -6,6 +6,7 @@ time), an event one gap or more after the previous one opens a new session, and 
 timeout drops the state once the watermark passes the last event plus the gap.
 """
 
+import os
 from collections.abc import Iterable, Iterator
 from typing import Any
 
@@ -25,7 +26,9 @@ from pyspark.sql.types import (
 # recommendation_shown/clicked are system feedback, not shopper activity: not session events
 SESSION_TYPES = ("add_to_cart", "checkout_started", "page_view", "product_view", "search")
 GAP_MS = 30 * 60 * 1000
-WATERMARK = "2 hours"
+# bronze commits one type table at a time (~20 dataset h apart at REPLAY_SPEED=3600) and the union
+# shares one watermark, so it must cover the lag of the last-read type, as bronze's own 48 h does
+WATERMARK = "48 hours"
 STATE_FIELDS = ("ts_ms", "event_type", "product_id", "category")
 STATE_SCHEMA = StructType(
     [StructField("ts_ms", ArrayType(LongType()))]
@@ -103,7 +106,7 @@ def session_features(events: DataFrame) -> DataFrame:
     """events: event_type, session_id, product_id, category, event_ts (dataset time)."""
     return (
         events.filter(F.col("session_id").isNotNull())
-        .withWatermark("event_ts", WATERMARK)
+        .withWatermark("event_ts", os.environ.get("SESSION_WATERMARK", WATERMARK))
         .groupBy("session_id")
         .applyInPandasWithState(
             update_sessions,

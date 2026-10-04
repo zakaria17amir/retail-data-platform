@@ -109,6 +109,12 @@ def test_click_probability_is_base_over_rank_doubled_on_category_match() -> None
     assert click_probability(2, same_category=True) == pytest.approx(0.3)
 
 
+def test_click_base_comes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLICK_BASE", "0.5")
+    assert click_probability(1, same_category=False) == pytest.approx(0.5)
+    assert click_probability(2, same_category=True) == pytest.approx(0.5)
+
+
 def test_click_rates_follow_the_probability_with_a_fixed_seed() -> None:
     rng = random.Random(42)
     trials = 20_000

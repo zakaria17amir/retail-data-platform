@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import urllib.request
 import uuid
@@ -51,7 +52,8 @@ def fetch_recommendations(
 
 
 def click_probability(rank: int, *, same_category: bool) -> float:
-    return CLICK_BASE / rank * (CATEGORY_BOOST if same_category else 1.0)
+    base = float(os.environ.get("CLICK_BASE", CLICK_BASE))
+    return base / rank * (CATEGORY_BOOST if same_category else 1.0)
 
 
 def _feedback(

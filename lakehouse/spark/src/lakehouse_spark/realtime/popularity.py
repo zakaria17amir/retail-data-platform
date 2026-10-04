@@ -1,8 +1,11 @@
+import os
+
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 
 POPULARITY_TYPES = ("product_view", "add_to_cart")
-WATERMARK = "25 hours"
+# above the 24 h window plus the bronze inter-type lag (see sessions.WATERMARK)
+WATERMARK = "49 hours"
 
 
 def product_popularity(events: DataFrame) -> DataFrame:
@@ -10,21 +13,28 @@ def product_popularity(events: DataFrame) -> DataFrame:
 
     Only rows whose newest event falls in the window's last hour are kept: that is the window
     "current" at the product's latest dataset time, so views_1h / views_24h describe the same now.
+    event_ts is a version, not an event time: hour start + event count in µs grows with every
+    update of a window and with every newer window, so Feast (which skips writes not strictly newer
+    than the stored row) keeps each update.
     """
     hour_start = F.col("window.end") - F.expr("INTERVAL 1 HOUR")
     last_hour = F.col("event_ts") >= hour_start
     view = F.col("event_type") == "product_view"
     return (
         events.filter(F.col("event_type").isin(*POPULARITY_TYPES) & F.col("product_id").isNotNull())
-        .withWatermark("event_ts", WATERMARK)
+        .withWatermark("event_ts", os.environ.get("POPULARITY_WATERMARK", WATERMARK))
         .withColumn("window", F.window("event_ts", "24 hours", "1 hour"))
         .groupBy("product_id", "window")
         .agg(
             F.count(F.when(view & last_hour, 1)).alias("views_1h"),
             F.count(F.when(view, 1)).alias("views_24h"),
             F.count(F.when(~view, 1)).alias("carts_24h"),
-            F.max("event_ts").alias("event_ts"),
+            F.max("event_ts").alias("last_ts"),
         )
-        .filter(F.col("event_ts") >= hour_start)
-        .drop("window")
+        .filter(F.col("last_ts") >= hour_start)
+        .withColumn(
+            "event_ts",
+            F.timestamp_micros(F.unix_micros(hour_start) + F.col("views_24h") + F.col("carts_24h")),
+        )
+        .drop("window", "last_ts")
     )

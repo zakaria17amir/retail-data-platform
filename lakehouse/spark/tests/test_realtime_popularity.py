@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -13,6 +13,10 @@ SCHEMA = "event_type string, product_id string, event_ts timestamp"
 
 def _ts(hour: int, minute: int = 0) -> datetime:
     return datetime(2017, 6, 1, hour, minute)
+
+
+def _version(hour_start: datetime, events_24h: int) -> datetime:
+    return hour_start + timedelta(microseconds=events_24h)
 
 
 def _popularity(df: DataFrame) -> dict[str, dict[str, Any]]:
@@ -38,47 +42,74 @@ def test_popularity_counts_last_hour_and_last_24_hours(spark: SparkSession) -> N
             "views_1h": 1,
             "views_24h": 3,
             "carts_24h": 1,
-            "event_ts": _ts(12, 20),
+            "event_ts": _version(_ts(12), 4),
         },
         "p2": {
             "product_id": "p2",
             "views_1h": 1,
             "views_24h": 1,
             "carts_24h": 0,
-            "event_ts": _ts(12, 30),
+            "event_ts": _version(_ts(12), 1),
         },
     }
 
 
-def test_late_event_inside_watermark_updates_popularity(spark: SparkSession, root: str) -> None:
-    path = f"{root}/bronze_like"
-    append = spark.createDataFrame([("product_view", "p1", _ts(12, 10))], SCHEMA)
-    append.write.format("delta").save(path)
-    outputs: list[dict[str, dict[str, Any]]] = []
+class Stream:
+    def __init__(self, spark: SparkSession, root: str) -> None:
+        self.spark, self.root, self.path = spark, root, f"{root}/bronze_like"
+        self.outputs: list[dict[str, dict[str, Any]]] = []
 
-    def collect(batch: DataFrame, batch_id: int) -> None:
-        outputs.append(
-            {r["product_id"]: r.asDict() for r in latest_per_key(batch, "product_id").collect()}
+    def append(self, rows: list[tuple[str, str, datetime]]) -> None:
+        df = self.spark.createDataFrame(rows, SCHEMA)
+        df.write.format("delta").mode("append").save(self.path)
+
+    def run(self, *appends: list[tuple[str, str, datetime]]) -> list[dict[str, dict[str, Any]]]:
+        def collect(batch: DataFrame, batch_id: int) -> None:
+            self.outputs.append(
+                {r["product_id"]: r.asDict() for r in latest_per_key(batch, "product_id").collect()}
+            )
+
+        self.append(appends[0])
+        query = (
+            product_popularity(self.spark.readStream.format("delta").load(self.path))
+            .writeStream.outputMode("update")
+            .foreachBatch(collect)
+            .option("checkpointLocation", f"{self.root}/_checkpoints/realtime/product_popularity")
+            .start()
         )
+        try:
+            query.processAllAvailable()
+            for rows in appends[1:]:
+                self.append(rows)
+                query.processAllAvailable()
+        finally:
+            query.stop()
+        return [o for o in self.outputs if o]
 
-    query = (
-        product_popularity(spark.readStream.format("delta").load(path))
-        .writeStream.outputMode("update")
-        .foreachBatch(collect)
-        .option("checkpointLocation", f"{root}/_checkpoints/realtime/product_popularity")
-        .start()
+
+def test_late_event_inside_watermark_updates_popularity(spark: SparkSession, root: str) -> None:
+    batches = Stream(spark, root).run(
+        [("product_view", "p1", _ts(12, 10))],
+        [("product_view", "p1", _ts(12, 40)), ("product_view", "p1", _ts(11, 30))],
+        # watermark = 12:40 - 49 h = May 30 11:40
+        [("product_view", "p1", datetime(2017, 5, 30, 10, 0))],
     )
-    try:
-        query.processAllAvailable()
-        late = [("product_view", "p1", _ts(12, 40)), ("product_view", "p1", _ts(11, 30))]
-        spark.createDataFrame(late, SCHEMA).write.format("delta").mode("append").save(path)
-        query.processAllAvailable()
-        too_late = [("product_view", "p1", datetime(2017, 5, 30, 10, 0))]
-        spark.createDataFrame(too_late, SCHEMA).write.format("delta").mode("append").save(path)
-        query.processAllAvailable()
-    finally:
-        query.stop()
-    batches = [o for o in outputs if o]
     assert [b["p1"]["views_24h"] for b in batches] == [1, 3]
     assert batches[-1]["p1"]["views_1h"] == 2
-    assert batches[-1]["p1"]["event_ts"] == _ts(12, 40)
+    assert batches[-1]["p1"]["event_ts"] == _version(_ts(12), 3)
+
+
+def test_every_update_pushes_a_strictly_newer_event_ts(spark: SparkSession, root: str) -> None:
+    # Feast's Redis store skips a write whose timestamp is not newer than the stored row: a cart
+    # committed after a later view (one bronze table per type) must still move the version
+    batches = Stream(spark, root).run(
+        [("product_view", "p1", _ts(12, 40))],
+        [("add_to_cart", "p1", _ts(12, 20))],
+        [("product_view", "p1", _ts(12, 40))],
+        [("product_view", "p1", _ts(13, 5))],
+    )
+    rows = [b["p1"] for b in batches]
+    assert [(r["views_24h"], r["carts_24h"]) for r in rows] == [(1, 0), (1, 1), (2, 1), (3, 1)]
+    stamps = [r["event_ts"] for r in rows]
+    assert stamps == sorted(set(stamps))
+    assert stamps[-1] == _version(_ts(13), 4)

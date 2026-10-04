@@ -2,6 +2,7 @@ import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from functools import reduce
 from typing import Any
 
 import pytest
@@ -18,18 +19,21 @@ SCHEMA = (
 Event = tuple[str, str, str | None, str | None, datetime]
 
 
-def _ts(hour: int, minute: int = 0) -> datetime:
-    return datetime(2017, 6, 1, hour, minute)
+def _ts(hour: int, minute: int = 0, day: int = 1) -> datetime:
+    return datetime(2017, 6, day, hour, minute)
 
 
 class Stream:
-    def __init__(self, spark: SparkSession, root: str) -> None:
-        self.spark, self.path, self.root = spark, f"{root}/events", root
+    """sources > 1 mirrors app.read_events: one Delta table per event type, unioned."""
+
+    def __init__(self, spark: SparkSession, root: str, sources: int = 1) -> None:
+        self.spark, self.root = spark, root
+        self.paths = [f"{root}/events{i}" for i in range(sources)]
         self.batches: list[list[dict[str, Any]]] = []
 
-    def append(self, rows: Sequence[Event]) -> None:
+    def append(self, rows: Sequence[Event], source: int = 0) -> None:
         df = self.spark.createDataFrame(list(rows), SCHEMA)
-        df.write.format("delta").mode("append").save(self.path)
+        df.write.format("delta").mode("append").save(self.paths[source])
 
     def collect(self, batch: DataFrame, batch_id: int) -> None:
         rows = [r.asDict() for r in batch.collect()]
@@ -38,8 +42,12 @@ class Stream:
 
     @contextmanager
     def sessions(self) -> Iterator[StreamingQuery]:
+        events = reduce(
+            DataFrame.unionByName,
+            (self.spark.readStream.format("delta").load(p) for p in self.paths),
+        )
         query = (
-            session_features(self.spark.readStream.format("delta").load(self.path))
+            session_features(events)
             .writeStream.outputMode("update")
             .foreachBatch(self.collect)
             .option("checkpointLocation", f"{self.root}/_checkpoints/realtime/session_features")
@@ -145,9 +153,43 @@ def test_late_event_inside_watermark_updates_its_session(spark: SparkSession, ro
         query.processAllAvailable()
         stream.append([("page_view", "s1", None, None, _ts(12, 20))])
         query.processAllAvailable()
-        stream.append([("page_view", "s1", None, None, _ts(11, 0))])
+        # watermark = 14:00 - 48 h = May 30 14:00
+        stream.append([("page_view", "s1", None, None, datetime(2017, 5, 30, 13, 0))])
         query.processAllAvailable()
     assert stream.batches[1:] == [[_feature("s1", _ts(12, 0), _ts(12, 20), 3)]]
+
+
+def test_event_from_a_lagging_type_table_still_updates_its_session(
+    spark: SparkSession, root: str
+) -> None:
+    # bronze commits one type table at a time, ~20 dataset hours apart at REPLAY_SPEED=3600: the
+    # union's watermark is set by the first-read table and the others' rows must still count
+    stream = Stream(spark, root, sources=2)
+    stream.append([])
+    stream.append(
+        [
+            ("page_view", "s1", None, None, _ts(7, 0)),
+            ("page_view", "s1", None, None, _ts(7, 10)),
+            ("page_view", "s2", None, None, _ts(12, 0)),
+        ],
+        source=1,
+    )
+    with stream.sessions() as query:
+        query.processAllAvailable()
+        stream.append([("product_view", "s1", "p1", "A", _ts(7, 5))])
+        query.processAllAvailable()
+    assert stream.batches[-1] == [
+        _feature(
+            "s1",
+            _ts(7, 0),
+            _ts(7, 10),
+            3,
+            n_product_views=1,
+            n_categories=1,
+            last_category="A",
+            last_product_ids="p1",
+        )
+    ]
 
 
 def test_out_of_order_batch_pushes_a_strictly_newer_event_ts(
@@ -191,7 +233,8 @@ def test_timeout_closes_the_session(spark: SparkSession, root: str) -> None:
     stream.append([("page_view", "s1", None, None, _ts(12, 0))])
     with stream.sessions() as query:
         query.processAllAvailable()
-        stream.append([("page_view", "s2", None, None, _ts(16, 0))])
+        # watermark = June 3 14:00 - 48 h, past s1's gap end 12:30: its state is dropped
+        stream.append([("page_view", "s2", None, None, _ts(14, 0, day=3))])
         query.processAllAvailable()
         deadline = time.monotonic() + 30
         while _state_rows(query) != 1 and time.monotonic() < deadline:
