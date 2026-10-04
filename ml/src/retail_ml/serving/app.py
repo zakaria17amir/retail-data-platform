@@ -172,6 +172,10 @@ def create_app(
     @app.post("/reload")
     def reload() -> Health:
         try:
+            state.sources = load_sources()  # enriched titles and categories
+        except Exception:
+            logger.exception("recommend sources not reloaded; serving the previous ones")
+        try:
             loaded = load_model()
         except Exception as e:
             logger.exception("reload failed")

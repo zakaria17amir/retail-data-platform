@@ -534,6 +534,11 @@ services:
       # serving only (not ml-cli): Feast reads the first, prometheus_client the second
       PROMETHEUS_MULTIPROCESS_DIR: /tmp/prometheus
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
+      # /recommend titles: Delta silver/product_enriched, read at start and on /reload
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
     ports:
       - "127.0.0.1:${SERVING_PORT:-8000}:8000"
     volumes:
