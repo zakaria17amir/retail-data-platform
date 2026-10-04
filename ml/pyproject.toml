@@ -17,6 +17,7 @@ dependencies = [
   "pyarrow==25.0.1",
   "boto3==1.43.103",
   "pyyaml==6.0.3",
+  "implicit==0.7.3",
 ]
 
 [project.scripts]
@@ -54,7 +55,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["sklearn", "sklearn.*", "lightgbm", "lightgbm.*", "pyarrow", "pyarrow.*"]
+module = [
+  "sklearn", "sklearn.*", "lightgbm", "lightgbm.*", "pyarrow", "pyarrow.*",
+  "scipy", "scipy.*", "implicit", "implicit.*", "threadpoolctl",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
