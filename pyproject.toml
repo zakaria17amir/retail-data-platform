@@ -7,6 +7,9 @@ requires-python = ">=3.12,<3.13"
 [dependency-groups]
 dev = ["ruff", "mypy", "pytest", "pytest-cov", "pre-commit", "fastavro", "deltalake", "psycopg[binary]", "python-dotenv"]
 
+[tool.uv]
+exclude-newer = "7 days"
+
 [tool.uv.workspace]
 members = ["ingestion/replayer", "ingestion/clickstream_sim", "lakehouse/spark", "lakehouse/quality", "analytics"]
 

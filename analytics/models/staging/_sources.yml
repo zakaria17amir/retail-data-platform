@@ -131,8 +131,16 @@ sources:
       - name: clickstream
         description: Clickstream events, insert-if-absent on event_id (may be empty before a sim run).
         config:
+          freshness:
+            warn_after: {count: 6, period: hour}
+            error_after: null
           meta:
             external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/events/clickstream')"
         columns:
           - name: event_id
-            data_tests: [not_null, unique]
+            data_tests:
+              - not_null
+              - unique
+              - dbt_utils.at_least_one:
+                  config:
+                    severity: warn
