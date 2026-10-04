@@ -125,3 +125,57 @@ def raw_batch(
 ) -> DataFrame:
     data = [(None, value, topic, 0, offset, kafka_ts) for offset, (value, topic) in enumerate(rows)]
     return spark.createDataFrame(data, RAW_SCHEMA)
+
+
+T0_MS = 1_496_318_400_000  # 2017-06-01T12:00:00Z
+ROW = StructType(
+    [
+        StructField("id", StringType()),
+        StructField("name", StringType()),
+        StructField("updated_at", TimestampType()),
+    ]
+)
+BRONZE = StructType(
+    [
+        StructField("op", StringType()),
+        StructField("ts_ms", LongType()),
+        StructField("before", ROW),
+        StructField("after", ROW),
+        StructField(
+            "source",
+            StructType(
+                [
+                    StructField("lsn", LongType()),
+                    StructField("ts_ms", LongType()),
+                    StructField("table", StringType()),
+                ]
+            ),
+        ),
+        StructField("kafka_topic", StringType()),
+        StructField("kafka_partition", IntegerType()),
+        StructField("kafka_offset", LongType()),
+    ]
+)
+
+
+def source_ts(lsn: int) -> datetime:
+    # pyspark collects timestamps in the process-local zone
+    return datetime.fromtimestamp(T0_MS / 1000 + lsn)
+
+
+def cdc(op: str, id_: str, name: str, lsn: int, offset: int, updated: int = 0) -> tuple[Any, ...]:
+    row = (id_, name, datetime(2017, 6, 1, 0, 0, updated))
+    return (
+        op,
+        T0_MS + lsn * 1000 + 5,
+        row if op == "d" else None,
+        None if op == "d" else row,
+        (lsn, T0_MS + lsn * 1000, "t"),
+        "cdc.olist.t",
+        0,
+        offset,
+    )
+
+
+def bronze(spark: SparkSession, rows: Sequence[tuple[Any, ...]]) -> DataFrame:
+    return spark.createDataFrame(list(rows), BRONZE)

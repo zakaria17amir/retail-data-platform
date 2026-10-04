@@ -54,25 +54,28 @@ def merge_scd2(
 ) -> int:
     if not DeltaTable.isDeltaTable(spark, path):
         new = scd2_new_versions(None, changes, key, tracked).cache()
-        scd2_recompute(new, key).write.format("delta").save(path)
-        inserted = new.count()
-        new.unpersist()
-        return inserted
+        try:
+            scd2_recompute(new, key).write.format("delta").save(path)
+            return new.count()
+        finally:
+            new.unpersist()
     table = DeltaTable.forPath(spark, path)
     existing = table.toDF().join(changes.select(*key).distinct(), list(key), "left_semi")
     new = scd2_new_versions(existing, changes, key, tracked).cache()
-    inserted = new.count()
-    versions = scd2_recompute(existing.unionByName(new, allowMissingColumns=True), key)
-    # one MERGE inserts new versions and re-closes neighbours atomically, so a rerun is a no-op
-    (
-        table.alias("t")
-        .merge(versions.alias("s"), on_keys([*key, "_source_lsn"]))
-        .whenMatchedUpdate(
-            "NOT (t.valid_to <=> s.valid_to AND t.is_current <=> s.is_current)",
-            {"valid_to": "s.valid_to", "is_current": "s.is_current"},
+    try:
+        inserted = new.count()
+        versions = scd2_recompute(existing.unionByName(new, allowMissingColumns=True), key)
+        # one MERGE inserts new versions and re-closes neighbours atomically, so a rerun is a no-op
+        (
+            table.alias("t")
+            .merge(versions.alias("s"), on_keys([*key, "_source_lsn"]))
+            .whenMatchedUpdate(
+                "NOT (t.valid_to <=> s.valid_to AND t.is_current <=> s.is_current)",
+                {"valid_to": "s.valid_to", "is_current": "s.is_current"},
+            )
+            .whenNotMatchedInsertAll()
+            .execute()
         )
-        .whenNotMatchedInsertAll()
-        .execute()
-    )
-    new.unpersist()
-    return inserted
+        return inserted
+    finally:
+        new.unpersist()

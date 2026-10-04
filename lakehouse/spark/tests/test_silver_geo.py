@@ -50,3 +50,16 @@ def test_zip_centroids_mean_and_mode_state(spark: SparkSession) -> None:
         for r in zip_centroids(points).collect()
     }
     assert got == {100: (-12.0, -42.0, 3, "MG"), 200: (-21.0, -51.0, 2, "ES")}
+
+
+def test_zip_centroids_mode_state_ties_put_nulls_last(spark: SparkSession) -> None:
+    points = spark.createDataFrame(
+        [
+            (1, 300, -1.0, -41.0, None),
+            (2, 300, -1.0, -41.0, None),
+            (3, 300, -1.0, -41.0, "SP"),
+            (4, 300, -1.0, -41.0, "SP"),
+        ],
+        "geolocation_pk long, zip_code_prefix int, lat double, lng double, state string",
+    )
+    assert [r.state for r in zip_centroids(points).collect()] == ["SP"]

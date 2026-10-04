@@ -30,7 +30,9 @@ def _negative_quantity(df: DataFrame) -> tuple[DataFrame, DataFrame]:
 
 def event_rules(existing: DataFrame | None) -> tuple[Rule, ...]:
     def duplicate(df: DataFrame) -> tuple[DataFrame, DataFrame]:
-        first = Window.partitionBy("event_id").orderBy("_bronze_ingest_ts", "kafka_offset")
+        first = Window.partitionBy("event_id").orderBy(
+            "_bronze_ingest_ts", "kafka_partition", "kafka_offset"
+        )
         ranked = df.withColumn("_rn", F.row_number().over(first))
         if existing is None:
             ranked = ranked.withColumn("_seen", F.lit(False))

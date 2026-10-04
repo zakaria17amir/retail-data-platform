@@ -12,7 +12,8 @@ pytestmark = pytest.mark.spark
 EVENT_SCHEMA = (
     "event_id string, event_type string, session_id string, customer_id string, device string, "
     "referrer string, event_ts string, product_id string, search_query string, quantity int, "
-    "order_id string, utm_campaign string, _bronze_ingest_ts timestamp, kafka_offset long"
+    "order_id string, utm_campaign string, _bronze_ingest_ts timestamp, kafka_partition int, "
+    "kafka_offset long"
 )
 INGEST = datetime(2017, 7, 1, 12, 0, 0)
 
@@ -24,6 +25,7 @@ def _event(
     quantity: int | None = None,
     ingest: datetime = INGEST,
     offset: int = 0,
+    partition: int = 0,
 ) -> tuple[Any, ...]:
     return (
         event_id,
@@ -39,6 +41,7 @@ def _event(
         None,
         None,
         ingest,
+        partition,
         offset,
     )
 
@@ -97,6 +100,8 @@ def test_event_duplicate_within_batch_and_vs_existing(spark: SparkSession) -> No
             _event("e1", ingest=INGEST, offset=9, session_id="second"),
             _event("e2", ingest=INGEST, offset=5, session_id="later_offset"),
             _event("e2", ingest=INGEST, offset=4, session_id="earlier_offset"),
+            _event("e3", ingest=INGEST, offset=0, partition=1, session_id="later_partition"),
+            _event("e3", ingest=INGEST, offset=7, partition=0, session_id="earlier_partition"),
             _event("old"),
             _event("new"),
         ],
@@ -110,10 +115,16 @@ def test_event_duplicate_within_batch_and_vs_existing(spark: SparkSession) -> No
     assert _rejects(rejected) == [
         ("event_duplicate", "e1"),
         ("event_duplicate", "e2"),
+        ("event_duplicate", "e3"),
         ("event_duplicate", "old"),
     ]
     got = {r.event_id: r.session_id for r in kept.collect()}
-    assert got == {"e1": "second", "e2": "earlier_offset", "new": "s1"}
+    assert got == {
+        "e1": "second",
+        "e2": "earlier_offset",
+        "e3": "earlier_partition",
+        "new": "s1",
+    }
 
 
 def test_session_over_24h_uses_existing_start(spark: SparkSession) -> None:

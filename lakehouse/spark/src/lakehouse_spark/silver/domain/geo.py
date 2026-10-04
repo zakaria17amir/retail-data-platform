@@ -33,7 +33,7 @@ def zip_centroids(points: DataFrame) -> DataFrame:
         F.avg("lat").alias("lat"), F.avg("lng").alias("lng"), F.count("*").alias("n_points")
     )
     by_state = points.groupBy("zip_code_prefix", "state").count()
-    rank = Window.partitionBy("zip_code_prefix").orderBy(F.desc("count"), F.asc("state"))
+    rank = Window.partitionBy("zip_code_prefix").orderBy(F.desc("count"), F.asc_nulls_last("state"))
     mode = (
         by_state.withColumn("_rn", F.row_number().over(rank))
         .filter("_rn = 1")
