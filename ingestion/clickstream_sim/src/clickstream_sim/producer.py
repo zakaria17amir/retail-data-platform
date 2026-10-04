@@ -56,7 +56,7 @@ class EventProducer:
             version: (schemas_dir / f"clickstream_event.v{version}.avsc").read_text(
                 encoding="utf-8"
             )
-            for version in (1, 2)
+            for version in (1, 2, 3)
         }
         self._serializers: dict[int, AvroSerializer] = {}
         self._producer: KafkaProducer = producer or cast(

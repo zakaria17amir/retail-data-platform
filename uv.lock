@@ -328,6 +328,7 @@ version = "0.1.0"
 source = { editable = "ingestion/clickstream_sim" }
 dependencies = [
     { name = "confluent-kafka", extra = ["avro"] },
+    { name = "polars" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
 ]
@@ -335,6 +336,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "confluent-kafka", extras = ["avro"] },
+    { name = "polars" },
     { name = "psycopg", extras = ["binary"] },
     { name = "python-dotenv" },
 ]

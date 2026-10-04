@@ -14,6 +14,8 @@ REFERRERS = ("direct", "google", "instagram", "email", None)
 
 TS_FORMAT = "%Y-%m-%dT%H:%M:%S"
 SESSION_WINDOW_SECONDS = 30 * 60
+BROWSING_JITTER_S = 3600
+V3_FIELDS = ("rank", "rec_model_version", "rec_strategy")
 EVENT_ID_NAMESPACE = uuid.UUID("5b0f8c1e-2d4a-4c6e-9f3b-7a1d2e8c4b90")
 
 
@@ -31,9 +33,15 @@ class Event:
     quantity: int | None
     order_id: str | None
     utm_campaign: str | None = None
+    rank: int | None = None
+    rec_model_version: str | None = None
+    rec_strategy: str | None = None
 
     def to_dict(self, schema_version: int) -> dict[str, object]:
         record = {f.name: getattr(self, f.name) for f in fields(self)}
+        if schema_version < 3:
+            for name in V3_FIELDS:
+                del record[name]
         if schema_version < 2:
             del record["utm_campaign"]
         return record
@@ -170,3 +178,14 @@ def browsing_session(
         events.append(builder.make(event_type, moment, **extra))
         moment += timedelta(seconds=rng.randint(5, 90))
     return events
+
+
+def order_sessions(
+    order: OrderRef, catalogue: Catalogue, rng: random.Random, browsing_ratio: int
+) -> list[list[Event]]:
+    sessions = [converting_session(order, catalogue, rng)]
+    for i in range(browsing_ratio):
+        jitter = timedelta(seconds=rng.randint(-BROWSING_JITTER_S, BROWSING_JITTER_S))
+        key = f"{order.order_id}:browse:{i}"
+        sessions.append(browsing_session(order.purchase_ts + jitter, catalogue, rng, key))
+    return sessions
