@@ -18,6 +18,7 @@ dependencies = [
   "httpx==0.28.1",
   "pydantic==2.13.5",
   "metricflow==0.213.0",
+  "genai",
 ]
 
 [project.scripts]
@@ -39,6 +40,9 @@ packages = ["src/agents"]
 
 [tool.uv]
 exclude-newer = "2026-09-27T00:00:00Z"
+
+[tool.uv.sources]
+genai = { path = "../genai", editable = true }
 
 [tool.ruff]
 line-length = 100

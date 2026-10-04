@@ -2,5 +2,7 @@
 !agents/pyproject.toml
 !agents/uv.lock
 !agents/src
+!genai/pyproject.toml
+!genai/src
 **/__pycache__
 **/*.pyc
