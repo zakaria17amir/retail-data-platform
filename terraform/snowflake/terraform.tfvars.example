@@ -1,0 +1,9 @@
+# cp terraform.tfvars.example terraform.tfvars (git-ignored). Pass the private key via
+# TF_VAR_private_key="$(cat rsa_key.p8)" rather than writing it here.
+organization_name    = "MYORG"
+account_name         = "MYACCOUNT"
+user                 = "TERRAFORM"
+lakehouse_bucket     = "retail-data-platform-demo-lakehouse"
+storage_aws_role_arn = "arn:aws:iam::000000000000:role/retail-demo-snowflake"
+dbt_rsa_public_key   = "MIIBIjANBgkqh...one-line-public-key...IDAQAB"
+credit_quota         = 5
