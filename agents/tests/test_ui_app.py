@@ -57,9 +57,58 @@ def test_profiles_build_graphs_with_one_shared_checkpointer(
 ) -> None:
     built: list[tuple[str, Any]] = []
     monkeypatch.setattr(
-        app, "BUILDERS", {"Analytics": lambda saver: built.append(("a", saver)) or "graph-a"}
+        app, "BUILDERS", {"Analytics": lambda saver, *_: built.append(("a", saver)) or "graph-a"}
     )
     app.GRAPHS.clear()
-    assert app.graph_for("Analytics") == "graph-a"
-    assert app.graph_for("Analytics") == "graph-a"
+    assert app.graph_for("Analytics", "c1", "t1") == "graph-a"
+    assert app.graph_for("Analytics", "c2", "t2") == "graph-a"
     assert len(built) == 1
+
+
+def test_customer_id_setting_defaults_to_the_demo_customer(
+    app: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEMO_CUSTOMER_ID", "demo-1")
+    (widget,) = app.chat_settings().inputs
+    assert (widget.id, widget.label, widget.initial) == ("customer_id", "Customer id", "demo-1")
+    assert app.customer_id(None) == "demo-1"
+    assert app.customer_id({"customer_id": " "}) == "demo-1"
+    assert app.customer_id({"customer_id": " cust-9 "}) == "cust-9"
+
+
+def test_shopping_graph_is_scoped_to_the_customer_and_thread(
+    app: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from conftest import call, fake_llm
+    from langgraph.checkpoint.memory import InMemorySaver
+    from shop_fakes import FakeShop
+
+    from agents.core import llm
+    from agents.shopping_agent import db
+
+    shops: list[tuple[str, str]] = []
+
+    def fake_shop(dsn: str, writer_dsn: str) -> FakeShop:
+        shops.append((dsn, writer_dsn))
+        return FakeShop()
+
+    def reply(alias: str = "chat") -> Any:
+        return fake_llm(call("get_order_status", {"order_id": "o-mine"}), "It was delivered.")
+
+    monkeypatch.setenv("POSTGRES_DSN", "postgresql://reader@pg/retail")
+    monkeypatch.setenv("SHOP_DSN", "postgresql://shop_writer@pg/retail")
+    monkeypatch.setattr(app, "_SAVER", [InMemorySaver()])
+    monkeypatch.setattr(llm, "chat_model", reply)
+    monkeypatch.setattr(db, "PostgresShop", fake_shop)
+    app.GRAPHS.clear()
+
+    mine = app.graph_for("Shopping", "cust-1", "t1")
+    assert app.graph_for("Shopping", "cust-1", "t1") is mine
+    other = app.graph_for("Shopping", "cust-2", "t1")
+    assert other is not mine
+    assert shops[0] == ("postgresql://reader@pg/retail", "postgresql://shop_writer@pg/retail")
+    config = app.thread_config("t1")
+    out = mine.invoke(app.payload("Shopping", "Where is order o-mine?", "t1"), config)
+    assert out["runs"][0]["error"] is None and out["answer"] == "It was delivered."
+    out = other.invoke({"question": "Where is order o-mine?"}, app.thread_config("t2"))
+    assert "not found for the current customer" in out["runs"][0]["error"]

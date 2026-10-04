@@ -119,6 +119,34 @@ def test_tool_results_reach_the_llm_as_untrusted_data(registry: ToolRegistry) ->
     assert "untrusted" in str(last_prompt[0].content)
 
 
+def test_second_message_on_a_thread_starts_a_fresh_turn(registry: ToolRegistry) -> None:
+    sql = {"sql": "select * from fct_orders where order_status = 'nope'"}
+    llm = fake_llm(
+        NO_CLARIFY,
+        call("run_sql", {"sql": "drop table fct_orders"}),
+        call("run_sql", sql),
+        call("query_metric", {"metrics": ["orders"]}),
+        "There were 3 orders.",
+        NO_CLARIFY,
+        call("query_metric", REVENUE_BY_YEAR),
+        "Revenue was 180 in 2017 and 20 in 2018.",
+    )
+    graph = build_graph(llm, registry, checkpointer=InMemorySaver())
+    config: Any = {"configurable": {"thread_id": "t1"}}
+    first = graph.invoke({"question": "How many orders?"}, config)
+    assert (first["tool_errors"], first["corrections"]) == (1, 1)
+    seen = len(llm.seen)
+    out = graph.invoke({"question": "Revenue by year?"}, config)
+    second_plan = llm.seen[seen + 1]
+    assert second_plan[-1].type == "human"
+    assert second_plan[-1].content == "Revenue by year?"
+    assert [m.type for m in second_plan].count("system") == 1
+    assert (out["tool_errors"], out["corrections"], out["issue"]) == (0, 0, None)
+    assert out["steps"] == ["guard_input", "clarify", "plan", "execute", "validate", "answer"]
+    assert [r["name"] for r in out["runs"]] == ["query_metric"]
+    assert out["answer"].startswith("Revenue was 180 in 2017 and 20 in 2018.")
+
+
 def test_clarify_interrupts_and_resumes(registry: ToolRegistry) -> None:
     llm = fake_llm(
         json.dumps({"needs_clarification": True, "question": "Which year?"}),

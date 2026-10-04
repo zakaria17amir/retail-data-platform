@@ -47,6 +47,16 @@ def test_query_metric_compiles_with_metricflow_and_runs_on_gold(
     assert where.rows == [[2]]
 
 
+def test_overall_ratio_metric_passes_the_cost_guard(dbt_target: Path, gold_dir: Path) -> None:
+    db = GoldDuckDB(gold_dir, max_estimated_rows=10)
+    layer = MetricFlowLayer(dbt_target / "semantic_manifest.json", db)
+    out = layer.query(QueryMetricIn(metrics=["aov"]))
+    assert "CROSS JOIN" in out.sql
+    assert out.columns == ["aov"] and out.rows == [[pytest.approx(200 / 3)]]
+    with pytest.raises(SqlRejected, match="estimated"):
+        db.run_sql("select count(*) from fct_orders a cross join fct_order_items b")
+
+
 def test_query_metric_bad_names_and_injected_where(dbt_target: Path, gold_dir: Path) -> None:
     layer = MetricFlowLayer(dbt_target / "semantic_manifest.json", GoldDuckDB(gold_dir))
     with pytest.raises(ToolError, match="revenu"):

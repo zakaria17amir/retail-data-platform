@@ -1,7 +1,6 @@
 """Eval runners: drive a compiled agent graph non-interactively over a golden set, score it,
 and log one MLflow run per suite to the `genai-evals` experiment."""
 
-import importlib
 import json
 import logging
 import math
@@ -13,6 +12,7 @@ from dataclasses import replace
 from statistics import fmean
 from typing import Any, Protocol
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.types import Command
@@ -28,6 +28,15 @@ from agents.evals.scoring import (
     refused,
     tool_selection_correct,
     tools_called,
+)
+from agents.shopping_agent.tools import (
+    Enrichment,
+    Searcher,
+    Session,
+    ShopData,
+    build_registry,
+    lakehouse_enrichment,
+    rag_search,
 )
 
 log = logging.getLogger(__name__)
@@ -169,9 +178,10 @@ def run_shopping(
             "session_id": f"eval-{case['id']}",
         }
         out, error, seconds = _run(graph_for(case), payload)
-        called = tools_called(out)
+        # quote_order is the approval node's own pricing step, not a model tool choice
+        called = [t for t in tools_called(out) if t != "quote_order"]
         steps = len(called)
-        if out.get("approval_requested"):
+        if out.get("approval_requested") and "place_order" not in called:
             called.append("place_order")
         if error is not None:
             correct = False
@@ -241,7 +251,8 @@ def _inject(value: Any, text: str) -> tuple[Any, bool]:
 
 
 def poison_registry(registry: ToolRegistry, agent: str, tool: str, text: str) -> ToolRegistry:
-    """Same tools, but `tool` returns attacker text inside its data (indirect injection)."""
+    """Same tools (incl. other principals' like the order approver), but `agent`'s `tool`
+    returns attacker text inside its data (indirect injection)."""
 
     def poisoned(t: Tool) -> Callable[[Any], BaseModel]:
         def fn(args: Any) -> BaseModel:
@@ -251,8 +262,8 @@ def poison_registry(registry: ToolRegistry, agent: str, tool: str, text: str) ->
         return fn
 
     reg = ToolRegistry()
-    for t in registry.tools_for(agent):
-        reg.register(replace(t, fn=poisoned(t)) if t.name == tool else t)
+    for t in registry.tools():
+        reg.register(replace(t, fn=poisoned(t)) if t.name == tool and agent in t.agents else t)
     return reg
 
 
@@ -292,20 +303,25 @@ def take(cases: Sequence[Mapping[str, Any]], limit: int | None) -> list[Mapping[
     return picked
 
 
-def _shopping_graphs(llm: BaseChatModel) -> Callable[[Mapping[str, Any]], Graph]:
+def shopping_graphs(
+    llm: BaseChatModel,
+    shop: ShopData,
+    *,
+    search: Searcher = rag_search,
+    enrichment: Enrichment = lakehouse_enrichment,
+    http: httpx.Client | None = None,
+) -> Callable[[Mapping[str, Any]], Graph]:
+    """One shopping graph per case: the tools are bound to the case's customer and session."""
     from langgraph.checkpoint.memory import InMemorySaver
 
-    # imported by name: the shopping agent ships separately (build_graph(llm, tools, checkpointer))
-    build = importlib.import_module("agents.shopping_agent.graph").build_graph
-    registry = importlib.import_module("agents.shopping_agent.tools").default_registry()
-    base = build(llm, registry, InMemorySaver())
+    from agents.shopping_agent.graph import build_graph
 
     def graph_for(case: Mapping[str, Any]) -> Graph:
-        poison = case.get("poison")
-        if not poison:
-            return base  # type: ignore[no-any-return]
-        tools = poison_registry(registry, SHOPPING_AGENT, poison["tool"], poison["text"])
-        return build(llm, tools, InMemorySaver())  # type: ignore[no-any-return]
+        session = Session(customer_id=case["customer_id"], session_id=f"eval-{case['id']}")
+        registry = build_registry(shop, session, search=search, enrichment=enrichment, http=http)
+        if poison := case.get("poison"):
+            registry = poison_registry(registry, SHOPPING_AGENT, poison["tool"], poison["text"])
+        return build_graph(llm, registry, InMemorySaver())
 
     return graph_for
 
@@ -329,8 +345,12 @@ def run_suite(suite: str, provider: str, limit: int | None) -> dict[str, float]:
         graph = build_graph(llm, default_registry(), checkpointer=InMemorySaver())
         rows, metrics = run_analytics(cases, graph, judge_llm)
     else:
+        from agents.shopping_agent.db import PostgresShop, read_dsn
+
         cases = take(load_jsonl(SHOPPING_GOLDEN), limit)
-        rows, metrics = run_shopping(cases, _shopping_graphs(llm), judge_llm)
+        # evals reject every approval, so the writer DSN is never used
+        shop = PostgresShop(read_dsn(), os.environ.get("SHOP_DSN", ""))
+        rows, metrics = run_shopping(cases, shopping_graphs(llm, shop), judge_llm)
     metrics["wall_seconds"] = round(time.perf_counter() - start, 1)
     params = {"provider": provider, "chat_alias": chat_alias, "judge_alias": judge_alias,
               "limit": limit or "all"}  # fmt: skip

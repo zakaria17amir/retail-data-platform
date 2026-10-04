@@ -10,7 +10,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
+from langgraph.types import Overwrite, interrupt
 from pydantic import BaseModel
 
 from agents.analytics_agent.tools import AGENT, DATA_TOOLS, find_issue
@@ -100,17 +100,28 @@ def build_graph(
     planner = llm.bind_tools([s for s in registry.specs(AGENT) if s["function"]["name"] != "plot"])
     json_llm = llm.bind(response_format={"type": "json_object"})
 
-    def guard_input(state: State) -> State:
+    def guard_input(state: State) -> dict[str, Any]:
+        # Each user message is a new turn on the thread: keep messages, reset per-turn fields.
+        fresh: dict[str, Any] = {
+            "steps": Overwrite(["guard_input"]),
+            "runs": Overwrite([]),
+            "pending_question": "",
+            "tool_errors": 0,
+            "round_failed": False,
+            "round_data": False,
+            "corrections": 0,
+            "retry": False,
+            "issue": None,
+            "blocked": False,
+            "answer": "",
+            "chart": None,
+        }
         result = check_input(state["question"])
         if result.ok:
-            return {"steps": ["guard_input"]}
+            return fresh
         log.info("input_blocked", extra={"agent": AGENT, "reasons": result.reasons})
         reasons = ", ".join(result.reasons)
-        return {
-            "steps": ["guard_input"],
-            "blocked": True,
-            "answer": REFUSAL.format(reasons=reasons),
-        }
+        return {**fresh, "blocked": True, "answer": REFUSAL.format(reasons=reasons)}
 
     def clarify(state: State) -> State:
         prompt = [SystemMessage(content=CLARIFY_PROMPT), HumanMessage(content=state["question"])]
@@ -128,13 +139,11 @@ def build_graph(
 
     def plan(state: State) -> State:
         history = state.get("messages") or []
-        opening: list[AnyMessage] = [
-            SystemMessage(content=plan_prompt),
-            HumanMessage(content=state["question"]),
-        ]
-        reply = planner.invoke(history or opening)
-        new: list[AnyMessage] = [reply] if history else [*opening, reply]
-        return {"steps": ["plan"], "messages": new}
+        new: list[AnyMessage] = [] if history else [SystemMessage(content=plan_prompt)]
+        if "plan" not in state["steps"]:
+            new.append(HumanMessage(content=state["question"]))
+        reply = planner.invoke([*history, *new])
+        return {"steps": ["plan"], "messages": [*new, reply]}
 
     def execute(state: State) -> State:
         last = state["messages"][-1]

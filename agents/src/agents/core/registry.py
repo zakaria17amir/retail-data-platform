@@ -50,6 +50,9 @@ class ToolRegistry:
             raise ValueError(f"tool {tool.name!r} is already registered")
         self._tools[tool.name] = tool
 
+    def tools(self) -> list[Tool]:
+        return list(self._tools.values())
+
     def tools_for(self, agent: str) -> list[Tool]:
         return [t for t in self._tools.values() if agent in t.agents]
 

@@ -130,6 +130,48 @@ def test_shopping_runner_rejects_approvals_and_scores() -> None:
     assert metrics["mean_trajectory_length"] == 0.5
 
 
+def test_shopping_runner_drives_the_real_graph_and_registry_over_golden_cases() -> None:
+    from conftest import call
+    from shop_fakes import P1, FakeSearch, FakeShop, Hit, fake_enrichment, recommend_client
+
+    from agents.evals.golden import SHOPPING_GOLDEN, load_jsonl
+    from agents.evals.runner import shopping_graphs
+
+    golden = {c["id"]: c for c in load_jsonl(SHOPPING_GOLDEN)}
+    cases = [golden["ts-01"], golden["adv-05"], golden["adv-13"]]
+    viewed, ordered = "001b72dfd63e9833e8c02742adf472e3", "000d9be29b5207b54e86aa1b1ac54872"
+    shop = FakeShop()
+    for pid in (viewed, ordered):
+        shop.rows[pid] = shop.rows[P1].model_copy(update={"product_id": pid})
+        shop.on_hand[pid] = 9
+    shop.customers[cases[0]["customer_id"]] = "u-golden"
+    search = FakeSearch(hits=[Hit(P1, "k1", "product_doc", "Bluetooth headset.", 0.9)])
+    llm = fake_llm(
+        call("search_products", {"query": "cheap bluetooth headset"}),
+        "Here is a headset from the catalogue.",
+        call("get_product", {"product_id": viewed}),
+        call("place_order", {"items": [{"product_id": viewed, "quantity": 5}]}),
+        "No order was placed.",
+        call("place_order", {"items": [{"product_id": ordered, "quantity": 2}]}),
+        "The order was not placed.",
+    )
+    graph_for = shopping_graphs(
+        llm, shop, search=search, enrichment=fake_enrichment, http=recommend_client([])
+    )
+    rows, metrics = run_shopping(cases, graph_for, fake_llm(judged(5), judged(4), judged(3)))
+    assert [r["error"] for r in rows] == [None, None, None]
+    assert [r["tools"] for r in rows] == [
+        ["search_products"],
+        ["get_product", "place_order"],
+        ["place_order"],
+    ]
+    assert [r["correct"] for r in rows] == [True, True, True]
+    assert rows[1]["poison_seen"] is True
+    assert shop.inserted == []
+    assert search.calls and metrics["tool_selection_accuracy"] == 1.0
+    assert metrics["refusal_rate"] == 1.0 and metrics["faithfulness"] == 4.0
+
+
 class In(BaseModel):
     product_id: str
 

@@ -99,10 +99,7 @@ SPECS: list[Spec] = [
     # totals
     _m("What is the total revenue across all time?", "total", ["revenue"]),
     _m("How many orders are there in total?", "total", ["orders"]),
-    # an undimensioned aov compiles to a cross join that the EXPLAIN guard rejects; same definition
-    _s("What is the overall average order value?", "total",
-       "select sum(item_revenue) / count(distinct order_id) as aov from fct_order_items"
-       " where is_revenue_order"),
+    _m("What is the overall average order value?", "total", ["aov"]),
     _m("What is the overall late delivery rate?", "total", ["late_delivery_rate"]),
     _m("How many orders have been delivered in total?", "total", ["delivered_orders"]),
     _m("How many orders were delivered late in total?", "total", ["late_delivered_orders"]),
@@ -110,10 +107,8 @@ SPECS: list[Spec] = [
     _m("What was revenue in 2018?", "filter", ["revenue"], where=Y18),
     _m("How many orders were placed in November 2017?", "filter", ["orders"],
        where=_between("2017-11-01", "2017-12-01")),
-    _s("What was the average order value of delivered orders?", "filter",
-       "select sum(i.item_revenue) / count(distinct i.order_id) as aov from fct_order_items i"
-       " join fct_orders o using (order_id) where i.is_revenue_order"
-       " and o.order_status = 'delivered'"),
+    _m("What was the average order value of delivered orders?", "filter", ["aov"],
+       where=[_status("delivered")]),
     _m("What was revenue from delivered orders in 2017?", "filter", ["revenue"],
        where=[*Y17, _status("delivered")]),
     _m("What was the late delivery rate in 2017?", "filter", ["late_delivery_rate"], where=Y17),

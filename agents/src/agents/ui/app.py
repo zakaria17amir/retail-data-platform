@@ -1,7 +1,6 @@
 """Chainlit UI: one app, two chat profiles; the Chainlit thread id is the checkpointer thread."""
 
 import asyncio
-import importlib
 import json
 import logging
 import os
@@ -9,6 +8,7 @@ from contextlib import ExitStack
 from typing import Any
 
 import chainlit as cl
+from chainlit.input_widget import InputWidget, TextInput
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -23,7 +23,7 @@ PROFILES = {
     "Shopping": "Find products, check stock, get recommendations, track your orders and place "
     "orders (every order needs your approval).",
 }
-GRAPHS: dict[str, Any] = {}
+GRAPHS: dict[tuple[str, ...], Any] = {}
 _STACK = ExitStack()
 _SAVER: list[Any] = []
 
@@ -43,29 +43,49 @@ def _chat_alias() -> str:
     return "chat-hosted" if os.environ.get("LLM_PROVIDER") == "hosted" else "chat"
 
 
-def _analytics(saver: Any) -> Any:
+def _analytics(saver: Any, customer_id: str, thread_id: str) -> Any:
     from agents.analytics_agent.graph import build_graph
     from agents.analytics_agent.tools import default_registry
-    from agents.core.llm import chat_model
+    from agents.core import llm
 
-    return build_graph(chat_model(_chat_alias()), default_registry(), checkpointer=saver)
+    return build_graph(llm.chat_model(_chat_alias()), default_registry(), checkpointer=saver)
 
 
-def _shopping(saver: Any) -> Any:
-    from agents.core.llm import chat_model
+def _shopping(saver: Any, customer_id: str, thread_id: str) -> Any:
+    from agents.core import llm
+    from agents.shopping_agent import db
+    from agents.shopping_agent.graph import build_graph
+    from agents.shopping_agent.tools import Session, build_registry
 
-    graph = importlib.import_module("agents.shopping_agent.graph")
-    tools = importlib.import_module("agents.shopping_agent.tools")
-    return graph.build_graph(chat_model(_chat_alias()), tools.default_registry(), saver)
+    shop = db.PostgresShop(db.read_dsn(), os.environ["SHOP_DSN"])
+    registry = build_registry(shop, Session(customer_id=customer_id, session_id=thread_id))
+    return build_graph(llm.chat_model(_chat_alias()), registry, saver)
 
 
 BUILDERS = {"Analytics": _analytics, "Shopping": _shopping}
 
 
-def graph_for(profile: str) -> Any:
-    if profile not in GRAPHS:
-        GRAPHS[profile] = BUILDERS[profile](_checkpointer())
-    return GRAPHS[profile]
+def graph_for(profile: str, customer_id: str, thread_id: str) -> Any:
+    """Analytics is one shared graph; shopping tools are bound to the customer and thread."""
+    key = (profile, customer_id, thread_id) if profile == "Shopping" else (profile,)
+    if key not in GRAPHS:
+        GRAPHS[key] = BUILDERS[profile](_checkpointer(), customer_id, thread_id)
+    return GRAPHS[key]
+
+
+def chat_settings() -> cl.ChatSettings:
+    customer: InputWidget = TextInput(
+        id="customer_id",
+        label="Customer id",
+        initial=os.environ.get("DEMO_CUSTOMER_ID", ""),
+        description="Olist customer_id the shopping assistant acts for.",
+    )
+    return cl.ChatSettings([customer])
+
+
+def customer_id(settings: dict[str, Any] | None) -> str:
+    chosen = str((settings or {}).get("customer_id") or "").strip()
+    return chosen or os.environ.get("DEMO_CUSTOMER_ID", "")
 
 
 def thread_config(thread_id: str) -> dict[str, Any]:
@@ -158,6 +178,8 @@ async def chat_profiles(user: cl.User | None) -> list[cl.ChatProfile]:
 async def on_chat_start() -> None:
     from agents.core import tracing
 
+    if cl.user_session.get("chat_profile") == "Shopping":  # type: ignore[no-untyped-call]
+        await chat_settings().send()  # type: ignore[no-untyped-call]
     if tracing._ENABLED:
         return
     try:
@@ -171,7 +193,8 @@ async def on_message(message: cl.Message) -> None:
     profile = cl.user_session.get("chat_profile") or "Analytics"  # type: ignore[no-untyped-call]
     thread_id = cl.context.session.thread_id
     config = thread_config(thread_id)
-    graph = graph_for(profile)
+    settings = cl.user_session.get("chat_settings")  # type: ignore[no-untyped-call]
+    graph = graph_for(profile, customer_id(settings), thread_id)
     current: Any = payload(profile, message.content, thread_id)
     while (pending := await _stream(graph, current, config)) is not None:
         current = Command(resume=await _resolve(pending))

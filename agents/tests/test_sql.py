@@ -85,6 +85,10 @@ def test_explain_row_estimate_guard(gold_dir: Path) -> None:
     db = GoldDuckDB(gold_dir, max_estimated_rows=1_000_000)
     with pytest.raises(SqlRejected, match="estimated"):
         db.run_sql("select count(*) from big a, big b")
+    with pytest.raises(SqlRejected, match="estimated"):
+        db.run_sql("select a.x, b.x from big a cross join (select x from big) b")
+    joined = "select a.s, b.t from (select sum(x) s from big) a, (select sum(-x) t from big) b"
+    assert db.run_sql(joined).rows == [[199990000, -199990000]]
 
 
 def test_timeout(gold_dir: Path) -> None:

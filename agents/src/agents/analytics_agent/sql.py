@@ -91,6 +91,8 @@ def estimate_rows(plan: Any) -> int:
     """Largest estimated cardinality in an EXPLAIN (FORMAT JSON) plan.
 
     DuckDB leaves cross products and nested-loop joins unestimated, so those multiply.
+    An ungrouped aggregate (no GROUP BY) always emits one row, so MetricFlow's cross join of
+    per-metric totals is cheap.
     """
 
     def walk(node: dict[str, Any]) -> tuple[int, int]:
@@ -99,6 +101,8 @@ def estimate_rows(plan: Any) -> int:
         own = info.get("Estimated Cardinality") if isinstance(info, dict) else None
         if own is not None:
             rows = int(re.sub(r"\D", "", str(own)) or 0)
+        elif node.get("name") == "UNGROUPED_AGGREGATE":
+            rows = 1
         elif node.get("name") in _PRODUCT_NODES and kids:
             rows = math.prod(k[0] for k in kids)
         else:
