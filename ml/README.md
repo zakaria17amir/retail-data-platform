@@ -44,9 +44,11 @@ window overlaps the champion's test window (`test_start`–`test_end` in `config
 so its PR-AUC is a pipeline check, not an independent holdout. Reference = a seeded sample of the
 champion's training window (approved < validation start) rebuilt from the training Parquet + Feast
 and scored by the champion — in-sample scores, so `prediction_drift` is biased towards drift and only
-reported. Drift uses KS / chi-square (p < 0.05) per feature — Evidently's default distance tests flag
-noise at small windows; categorical levels under 5 % of the reference are pooled as `__other__`. With
-16 features at p < 0.05, `drift_share > 0.3` needs ≥ 5 drifted columns (≈ 0.1 % by chance if
+reported. Drift test per feature depends on the current window's size: under 1,000 rows KS /
+chi-square at p < 0.05 (Evidently's distance tests are biased upward at small n); from 1,000 rows
+Wasserstein (normed) / Jensen-Shannon distance ≥ 0.1 (p-value tests flag negligible shifts at large
+n). Categorical levels under 5 % of the reference are pooled as `__other__` in both regimes.
+`drift_share > 0.3` needs ≥ 5 of the 16 features drifted (at p < 0.05 ≈ 0.1 % by chance if
 independent). Run from the host with `MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD=false`: the tracking
 server advertises presigned downloads whose URLs point at `minio:9000`, which only resolves inside
 Compose. Delayed ground truth = the current orders that have `is_late`, per approval week; breach

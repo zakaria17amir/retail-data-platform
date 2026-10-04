@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
@@ -19,13 +20,29 @@ PREDICTION = "probability"
 # approve_month always drifts for a 28-day window against a year-long reference
 DRIFT_NUMERIC = [c for c in NUMERIC if c != "approve_month"] + SELLER_FEATURES
 DRIFT_FEATURES = DRIFT_NUMERIC + CATEGORICAL
-# p-value tests (drift at p < 0.05) account for the current window's size; Evidently's default for a
-# reference > 1000 rows (Wasserstein / Jensen-Shannon distance ≥ 0.1) is biased upward at n ≈ 50
-METHODS = {"num_method": "ks", "cat_method": "chisquare"}
+# Evidently's distance defaults (Wasserstein normed / Jensen-Shannon ≥ 0.1) are biased upward at
+# n ≈ 50, while p-value tests (p < 0.05) flag negligible shifts once the current window is large
+LARGE_WINDOW = 1000
+P_VALUE_TESTS = {
+    "num_method": "ks",
+    "cat_method": "chisquare",
+    "num_threshold": 0.05,
+    "cat_threshold": 0.05,
+}
+DISTANCES = {
+    "num_method": "wasserstein",
+    "cat_method": "jensenshannon",
+    "num_threshold": 0.1,
+    "cat_threshold": 0.1,
+}
 # chi-square is unreliable with sparse cells: levels under 5 % of the reference (and levels unseen
 # in it) are pooled, so a new dominant level still shows up as a shift in OTHER's share
 OTHER = "__other__"
 MIN_CATEGORY_SHARE = 0.05
+
+
+def drift_methods(n_current: int) -> dict[str, Any]:
+    return dict(P_VALUE_TESTS if n_current < LARGE_WINDOW else DISTANCES)
 
 
 def drift_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -61,12 +78,15 @@ def drift_report(reference: pd.DataFrame, current: pd.DataFrame) -> tuple[dict[s
     definition = DataDefinition(
         numerical_columns=[*DRIFT_NUMERIC, PREDICTION], categorical_columns=CATEGORICAL
     )
-    features = DriftedColumnsCount(columns=DRIFT_FEATURES, **METHODS)
-    prediction = DriftedColumnsCount(columns=[PREDICTION], **METHODS)
+    methods = drift_methods(len(cur))
+    features = DriftedColumnsCount(columns=DRIFT_FEATURES, **methods)
+    prediction = DriftedColumnsCount(columns=[PREDICTION], **methods)
     report = Report(
         [
-            DataDriftPreset(columns=DRIFT_FEATURES, **METHODS),
-            ValueDrift(column=PREDICTION, method=METHODS["num_method"]),
+            DataDriftPreset(columns=DRIFT_FEATURES, **methods),
+            ValueDrift(
+                column=PREDICTION, method=methods["num_method"], threshold=methods["num_threshold"]
+            ),
             features,
             prediction,
         ]

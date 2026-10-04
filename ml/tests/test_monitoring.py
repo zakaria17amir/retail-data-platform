@@ -14,7 +14,7 @@ from mlflow.pyfunc.model import PythonModel
 
 from retail_ml import cli
 from retail_ml.config import load_late_delivery_config
-from retail_ml.features import CATEGORICAL
+from retail_ml.features import CATEGORICAL, SELLER_FEATURES
 from retail_ml.monitoring import drift, monitor
 from retail_ml.monitoring.monitor import BREACH, monitor_late_delivery
 from retail_ml.monitoring.performance import supported, weekly_performance
@@ -308,6 +308,53 @@ def test_rare_categories_collapse_to_other_by_reference_share() -> None:
     assert sorted(set(r["payment_type"])) == ["__other__", "a", "b"]
     assert c["payment_type"].tolist() == ["a", "__other__", "__other__"]
     assert ref["payment_type"].iloc[-1] == "c"  # inputs untouched
+
+
+def test_drift_methods_switch_to_distances_at_1000_current_rows() -> None:
+    assert drift.drift_methods(999) == {
+        "num_method": "ks",
+        "cat_method": "chisquare",
+        "num_threshold": 0.05,
+        "cat_threshold": 0.05,
+    }
+    assert drift.drift_methods(1000) == {
+        "num_method": "wasserstein",
+        "cat_method": "jensenshannon",
+        "num_threshold": 0.1,
+        "cat_threshold": 0.1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("p_value_tests", "scale", "drifted"),
+    [(True, 1.03, True), (False, 1.03, False), (False, 1.5, True)],
+)
+def test_large_window_ignores_a_negligible_shift_p_values_would_flag(
+    gold_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    p_value_tests: bool,
+    scale: float,
+    drifted: bool,
+) -> None:
+    n = 10_000
+    synthetic_gold(gold_dir, n_orders=2 * n)
+    df = pd.read_parquet(training_path(gold_dir))
+    rng = np.random.default_rng(0)
+    for col in [*SELLER_FEATURES, "probability"]:
+        df[col] = rng.uniform(0, 1, 2 * n)
+    reference, current = df.iloc[:n].copy(), df.iloc[n:].copy()
+    # 6 of 16 features move by a few % of their spread (scale 1.03) or substantially (1.5)
+    for col in SELLER_FEATURES:
+        current[col] *= scale
+    approved = pd.to_datetime(current["order_approved_ts_utc"], utc=True)
+    estimated = pd.to_datetime(current["order_estimated_delivery_ts_utc"], utc=True)
+    current["order_estimated_delivery_ts_utc"] = approved + (estimated - approved) * scale
+    current["n_items"] = current["n_items"] + (scale - 1) * 5 / 3
+    current["payment_installments"] = current["payment_installments"] + (scale - 1) * 20 / 3
+    if p_value_tests:
+        monkeypatch.setattr(drift, "LARGE_WINDOW", 2 * n)
+    metrics, _ = drift.drift_report(reference, current)
+    assert (metrics["drift_share"] > 0.3) is drifted
 
 
 def test_upload_report_to_s3_uses_minio_endpoint_and_credentials(
