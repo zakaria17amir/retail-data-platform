@@ -339,6 +339,7 @@ services:
         (umask 077 && python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
           > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE")
         airflow pools set ml 1 "serialise ml jobs (feast file registry)"
+        airflow pools set llm 1 "serialise llm jobs (one GPU, Ollama swaps chat and embed)"
         exec airflow standalone
     environment:
       # monitor overrides reach the retail-ml tasks only when non-empty (ml_common.PASSTHROUGH); GIT_SHA
@@ -368,6 +369,10 @@ services:
       PROMOTION_MODE: ${PROMOTION_MODE:-auto}
       # monitor breaches retrain at most once per cooldown
       RETRAIN_COOLDOWN_HOURS: ${RETRAIN_COOLDOWN_HOURS:-72}
+      # genai DAGs (retail-agents containers): proxy key, enrich sample (empty = CLI default 500), eval size
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+      ENRICH_LIMIT: ${ENRICH_LIMIT:-}
+      EVAL_LIMIT: ${EVAL_LIMIT:-20}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:
