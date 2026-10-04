@@ -1,0 +1,138 @@
+sources:
+  - name: silver
+    description: >
+      Silver Delta tables (Phase 2 silver contract). On duckdb each table is read with delta_scan
+      from MinIO; on snowflake it resolves to the `silver` schema of SNOWFLAKE_DATABASE.
+    schema: silver
+    config:
+      loaded_at_field: _silver_loaded_at
+      freshness:
+        warn_after: {count: 6, period: hour}
+        error_after: {count: 48, period: hour}
+    tables:
+      - name: categories
+        description: Product category names with their English translation (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/catalog/categories')"
+        columns:
+          - name: product_category_name
+            data_tests: [not_null, unique, dbt_utils.at_least_one]
+
+      - name: products
+        description: Product catalogue, SCD2 versions.
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/catalog/products')"
+        columns:
+          - name: product_id
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    where: is_current
+              - dbt_utils.at_least_one
+
+      - name: customers
+        description: Customers, SCD2 versions.
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/party/customers')"
+        columns:
+          - name: customer_id
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    where: is_current
+              - dbt_utils.at_least_one
+
+      - name: sellers
+        description: Sellers, SCD2 versions.
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/party/sellers')"
+        columns:
+          - name: seller_id
+            data_tests:
+              - not_null
+              - unique:
+                  config:
+                    where: is_current
+              - dbt_utils.at_least_one
+
+      - name: geolocation_points
+        description: Raw geolocation points per zip code prefix (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/geo/geolocation_points')"
+        columns:
+          - name: geolocation_pk
+            data_tests: [not_null, unique, dbt_utils.at_least_one]
+
+      - name: zip_centroids
+        description: Derived zip code prefix centroids (overwritten each run; no CDC metadata).
+        config:
+          freshness: null
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/geo/zip_centroids')"
+        columns:
+          - name: zip_code_prefix
+            data_tests: [not_null, unique, dbt_utils.at_least_one]
+
+      - name: orders
+        description: Orders with UTC/local timestamps and timeline flags (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/sales/orders')"
+        columns:
+          - name: order_id
+            data_tests: [not_null, unique, dbt_utils.at_least_one]
+
+      - name: order_items
+        description: Order items, one row per unit (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/sales/order_items')"
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [order_id, order_item_id]
+        columns:
+          - name: order_id
+            data_tests: [not_null, dbt_utils.at_least_one]
+          - name: order_item_id
+            data_tests: [not_null]
+
+      - name: order_payments
+        description: Order payments, one row per payment sequence (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/sales/order_payments')"
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [order_id, payment_sequential]
+        columns:
+          - name: order_id
+            data_tests: [not_null, dbt_utils.at_least_one]
+          - name: payment_sequential
+            data_tests: [not_null]
+
+      - name: order_reviews
+        description: Order reviews keyed by the surrogate review_pk (current state).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/sales/order_reviews')"
+        columns:
+          - name: review_pk
+            data_tests: [not_null, unique, dbt_utils.at_least_one]
+
+      - name: clickstream
+        description: Clickstream events, insert-if-absent on event_id (may be empty before a sim run).
+        config:
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/events/clickstream')"
+        columns:
+          - name: event_id
+            data_tests: [not_null, unique]

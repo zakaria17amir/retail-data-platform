@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -87,3 +87,10 @@ maintain:
 
 reset-bronze:
 	sh ingestion/reset-bronze.sh $(or $(SEED),seed)
+
+# dbt-duckdb does not create the DuckDB file's parent directory; paths resolve from analytics/
+gold:
+	cd analytics && mkdir -p "$$(dirname "$${DUCKDB_PATH:-../data/warehouse/retail.duckdb}")" && uv run dbt deps && uv run dbt build --target local
+
+dbt-parse:
+	cd analytics && uv run dbt parse --target local && uv run dbt parse --target snowflake
