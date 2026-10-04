@@ -11,6 +11,8 @@ from docker.types import Mount
 log = logging.getLogger(__name__)
 
 FEATURES = Asset("redis://redis:6379/0/feast")
+# monitor_late_delivery runs on it for a daily cadence after scoring; monitor itself no longer reads
+# the file (it scores its own simulated-live window from the training Parquet)
 SCORES = Asset("file:///opt/airflow/data/gold/ml/pred_late_delivery.parquet")
 # optional overrides of the image's documented defaults, forwarded only when set for Airflow
 PASSTHROUGH = (
@@ -20,6 +22,8 @@ PASSTHROUGH = (
     "MIN_CURRENT_ROWS",
     "MIN_LABELLED",
     "MIN_POSITIVES",
+    "MONITOR_WINDOW_DAYS",
+    "MONITOR_TAIL_RATIO",
 )
 S3_SECRETS = {
     "MINIO_ROOT_USER": "MINIO_ROOT_USER",

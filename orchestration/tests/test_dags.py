@@ -283,7 +283,7 @@ def test_ml_dag_schedules(dagbag: DagBag) -> None:
     assert dags["train_demand_forecast"].timetable.expression == "0 0 * * 0"
     assert dags["score_late_delivery"].timetable.expression == "0 0 * * *"  # @daily
     assert ml_common.SCORES in dags["score_late_delivery"].get_task("score").outlets
-    # monitor reads the scores file: chained so it never reads a half-written one
+    # daily cadence after scoring; monitor scores its own window and no longer reads the file
     assert dags["monitor_late_delivery"].timetable.asset_condition == AssetAll(ml_common.SCORES)
     for dag_id in ML_DAG_IDS:
         assert dags[dag_id].max_active_runs == 1, dag_id
@@ -334,6 +334,20 @@ def test_only_monitor_gets_object_store_credentials(dagbag: DagBag) -> None:
     assert monitor.environment["MINIO_ENDPOINT"] == "http://minio:9000"
     assert monitor.environment["MONITORING_REPORT_ROOT"].startswith("s3://")
     assert not dagbag.dags["score_late_delivery"].get_task("score")._private_environment
+
+
+def test_ml_task_forwards_only_set_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOST_REPO_DIR", "/repo")
+    monkeypatch.setenv("MONITOR_WINDOW_DAYS", "14")
+    monkeypatch.setenv("MONITOR_TAIL_RATIO", "0.5")
+    # compose passes unset overrides as empty strings; GIT_SHA unset -> the image's baked value
+    monkeypatch.setenv("MIN_LABELLED", "")
+    monkeypatch.delenv("GIT_SHA", raising=False)
+    env = ml_common.ml_task("probe", ["monitor", "late_delivery"], s3=True).environment
+    assert env["MONITOR_WINDOW_DAYS"] == "14"
+    assert env["MONITOR_TAIL_RATIO"] == "0.5"
+    assert "MIN_LABELLED" not in env
+    assert "GIT_SHA" not in env
 
 
 def test_monitor_breach_triggers_retraining(dagbag: DagBag) -> None:

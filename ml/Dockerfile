@@ -17,6 +17,10 @@ COPY configs configs
 RUN uv sync --locked --no-dev
 
 RUN useradd --create-home --uid 1000 retail && chown retail /app
+# lineage tag for runs launched without a checkout (Airflow DockerOperator); last, so a new SHA only
+# rebuilds this layer. A runtime GIT_SHA still overrides it.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
 USER retail
 
 ENTRYPOINT ["retail-ml"]

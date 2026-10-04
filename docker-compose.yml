@@ -1,5 +1,16 @@
 name: retail
 
+# retail-ml monitor overrides for airflow and ml-cli; empty = the image's documented default
+x-monitor-env: &monitor-env
+  DRIFT_SHARE_THRESHOLD: ${DRIFT_SHARE_THRESHOLD:-}
+  REFERENCE_SAMPLE_ROWS: ${REFERENCE_SAMPLE_ROWS:-}
+  MIN_CURRENT_ROWS: ${MIN_CURRENT_ROWS:-}
+  MIN_LABELLED: ${MIN_LABELLED:-}
+  MIN_POSITIVES: ${MIN_POSITIVES:-}
+  MONITOR_WINDOW_DAYS: ${MONITOR_WINDOW_DAYS:-}
+  MONITOR_TAIL_RATIO: ${MONITOR_TAIL_RATIO:-}
+  MONITORING_REPORT_ROOT: ${MONITORING_REPORT_ROOT:-}
+
 services:
   postgres:
     profiles: [core, ingest, demo, analytics, ml]
@@ -326,7 +337,9 @@ services:
         airflow pools set ml 1 "serialise ml jobs (feast file registry)"
         exec airflow standalone
     environment:
-      <<: *airflow-env
+      # monitor overrides reach the retail-ml tasks only when non-empty (ml_common.PASSTHROUGH); GIT_SHA
+      # is left out, so ML tasks log the SHA baked into the image
+      <<: [*airflow-env, *monitor-env]
       # LocalExecutor pre-forks one worker per parallelism slot (default 32), too much for the 2g limit
       AIRFLOW__CORE__PARALLELISM: "4"
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
@@ -478,11 +491,17 @@ services:
 
   serving:
     profiles: [ml]
-    build: ml
+    build: &ml-build
+      context: ml
+      args:
+        # baked as ENV GIT_SHA (MLflow lineage tag); `make ml-build` / `make ml` pass the short HEAD
+        GIT_SHA: ${GIT_SHA:-unknown}
     image: retail-ml
     # image ENTRYPOINT is retail-ml (DockerOperator, ml-cli); reset so the command can be uvicorn
     entrypoint: []
-    # 4 workers share Prometheus mmap files; a restart must not inherit a dead worker's counters
+    # 4 workers share Prometheus mmap files; a restart must not inherit a dead worker's counters.
+    # POST /reload reloads only the worker that handles it: to switch the champion on all 4,
+    # `docker compose --profile ml restart serving`
     command:
       - sh
       - -ec
@@ -497,7 +516,6 @@ services:
         FEAST_REGISTRY_PATH: /data/feast/registry.db
         GOLD_DIR: /data/gold
         PROMOTION_MODE: ${PROMOTION_MODE:-auto}
-        GIT_SHA: ${GIT_SHA:-unknown}
       # serving only (not ml-cli): Feast reads the first, prometheus_client the second
       PROMETHEUS_MULTIPROCESS_DIR: /tmp/prometheus
       PROMETHEUS_MULTIPROC_DIR: /tmp/prometheus
@@ -528,13 +546,13 @@ services:
 
   ml-cli:
     profiles: [ml]
-    build: ml
+    build: *ml-build
     image: retail-ml
     # one-off batch commands only (`make ml ARGS=…`): scale 0 keeps `up` from starting it, `run` still works
     scale: 0
     entrypoint: ["retail-ml"]
     environment:
-      <<: *ml-env
+      <<: [*ml-env, *monitor-env]
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MINIO_ENDPOINT: http://minio:9000
