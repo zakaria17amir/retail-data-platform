@@ -8,3 +8,4 @@
 !ingestion/clickstream_sim/src
 !ingestion/schemas
 !lakehouse/spark/pyproject.toml
+!lakehouse/quality/pyproject.toml
