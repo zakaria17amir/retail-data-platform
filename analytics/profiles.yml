@@ -5,6 +5,8 @@ retail:
       type: duckdb
       path: "{{ env_var('DUCKDB_PATH', '') or '../data/warehouse/retail.duckdb' }}"
       threads: 4
+      # external marts land at <external_root>/<model>.parquet
+      external_root: "{{ env_var('GOLD_DIR', '') or '../data/gold' }}"
       settings:
         TimeZone: UTC
       extensions:

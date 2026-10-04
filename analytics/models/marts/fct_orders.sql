@@ -32,6 +32,7 @@ select
     lifecycle.purchase_to_customer_hours,
     lifecycle.is_delivered,
     lifecycle.is_late,
+    lifecycle.is_deleted,
     lifecycle.is_revenue_order,
     lifecycle.item_count,
     lifecycle.item_revenue,

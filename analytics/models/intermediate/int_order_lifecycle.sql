@@ -41,6 +41,7 @@ select
     orders.order_id,
     orders.customer_id,
     orders.order_status,
+    orders._is_deleted as is_deleted,
     orders.order_purchase_ts_local,
     orders.order_purchase_ts_utc,
     orders.order_approved_ts_utc,
@@ -57,7 +58,12 @@ select
         and orders.order_delivered_customer_ts_utc > orders.order_estimated_delivery_ts_utc,
         false
     ) as is_late,
-    orders.order_status not in ('canceled', 'unavailable') as is_revenue_order,
+    coalesce(
+        orders.order_status not in ('canceled', 'unavailable')
+        and not orders._is_deleted
+        and items.item_revenue > 0,
+        false
+    ) as is_revenue_order,
     coalesce(items.item_count, 0) as item_count,
     coalesce(items.item_revenue, 0) as item_revenue,
     coalesce(payments.payment_value, 0) as payment_value

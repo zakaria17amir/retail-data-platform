@@ -144,3 +144,31 @@ sources:
               - dbt_utils.at_least_one:
                   config:
                     severity: warn
+
+      - name: rule_metrics
+        description: Silver rule reject counts per run/table/rule (append-only, written by the silver job).
+        config:
+          freshness: null
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/_rule_metrics')"
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [run_id, '"table"', rule_id]
+        columns:
+          - name: run_id
+            data_tests: [not_null, dbt_utils.at_least_one]
+
+      - name: dq_results
+        description: Silver quality check outcomes per run/table/expectation (append-only, written by quality).
+        config:
+          freshness: null
+          meta:
+            external_location: "delta_scan('s3://{{ env_var('LAKEHOUSE_BUCKET','lakehouse') }}/silver/_dq_results')"
+        data_tests:
+          - dbt_utils.unique_combination_of_columns:
+              arguments:
+                combination_of_columns: [run_id, '"table"', expectation]
+        columns:
+          - name: run_id
+            data_tests: [not_null, dbt_utils.at_least_one]

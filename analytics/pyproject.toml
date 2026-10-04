@@ -6,6 +6,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
   "dbt-core==1.12.5",
   "dbt-duckdb==1.11.0",
+  "dbt-metricflow==0.15.0",
   "duckdb==1.5.5",
   "sqlfluff==4.3.0",
   "sqlfluff-templater-dbt==4.3.0",

@@ -26,19 +26,24 @@ models:
 
 unit_tests:
   - name: int_order_lifecycle_items_and_payments_not_double_counted
-    description: 2 items x 2 payments on one order; canceled/unavailable orders are not revenue.
+    description: >
+      2 items x 2 payments on one order; canceled/unavailable, deleted and item-less orders are
+      not revenue.
     model: int_order_lifecycle
     given:
       - input: ref('stg_orders')
         rows:
-          - {order_id: o1, order_status: delivered}
-          - {order_id: o2, order_status: canceled}
-          - {order_id: o3, order_status: unavailable}
+          - {order_id: o1, order_status: delivered, _is_deleted: false}
+          - {order_id: o2, order_status: canceled, _is_deleted: false}
+          - {order_id: o3, order_status: unavailable, _is_deleted: false}
+          - {order_id: o4, order_status: delivered, _is_deleted: true}
+          - {order_id: o5, order_status: shipped, _is_deleted: false}
       - input: ref('stg_order_items')
         rows:
           - {order_id: o1, order_item_id: 1, price: 10.00, freight_value: 2.00}
           - {order_id: o1, order_item_id: 2, price: 20.00, freight_value: 3.00}
           - {order_id: o2, order_item_id: 1, price: 50.00, freight_value: 5.00}
+          - {order_id: o4, order_item_id: 1, price: 7.00, freight_value: 1.00}
       - input: ref('stg_order_payments')
         rows:
           - {order_id: o1, payment_sequential: 1, payment_value: 20.00}
@@ -46,9 +51,11 @@ unit_tests:
           - {order_id: o2, payment_sequential: 1, payment_value: 55.00}
     expect:
       rows:
-        - {order_id: o1, item_count: 2, item_revenue: 35.00, payment_value: 35.00, is_revenue_order: true}
-        - {order_id: o2, item_count: 1, item_revenue: 55.00, payment_value: 55.00, is_revenue_order: false}
-        - {order_id: o3, item_count: 0, item_revenue: 0.00, payment_value: 0.00, is_revenue_order: false}
+        - {order_id: o1, item_count: 2, item_revenue: 35.00, payment_value: 35.00, is_revenue_order: true, is_deleted: false}
+        - {order_id: o2, item_count: 1, item_revenue: 55.00, payment_value: 55.00, is_revenue_order: false, is_deleted: false}
+        - {order_id: o3, item_count: 0, item_revenue: 0.00, payment_value: 0.00, is_revenue_order: false, is_deleted: false}
+        - {order_id: o4, item_count: 1, item_revenue: 8.00, payment_value: 0.00, is_revenue_order: false, is_deleted: true}
+        - {order_id: o5, item_count: 0, item_revenue: 0.00, payment_value: 0.00, is_revenue_order: false, is_deleted: false}
 
   - name: int_order_lifecycle_durations_and_lateness
     model: int_order_lifecycle

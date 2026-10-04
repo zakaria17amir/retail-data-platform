@@ -1,8 +1,11 @@
 models:
   - name: dim_date
-    description: Calendar day spine 2016-01-01..2019-12-31.
+    description: Calendar day spine 2016-01-01..2019-12-31; also the MetricFlow time spine.
+    time_spine:
+      standard_granularity_column: date_day
     columns:
       - name: date_day
+        granularity: day
         data_tests: [not_null, unique]
 
   - name: dim_customer
@@ -63,7 +66,8 @@ models:
   - name: fct_orders
     description: >
       Grain order (all statuses). customer_sk is the customer version valid at purchase time;
-      lifecycle measures from int_order_lifecycle; is_revenue_order excludes canceled/unavailable.
+      lifecycle measures from int_order_lifecycle; is_revenue_order excludes canceled/unavailable,
+      deleted and item-less orders.
     columns:
       - name: order_id
         data_tests: [not_null, unique]

@@ -1,0 +1,42 @@
+metrics:
+  - name: revenue
+    label: Revenue
+    description: >
+      sum(price + freight_value) over order items of orders whose order_status not in
+      ('canceled', 'unavailable'), not deleted and with item revenue > 0.
+    type: simple
+    type_params:
+      measure: revenue
+
+  - name: orders
+    label: Orders
+    description: Distinct revenue orders.
+    type: simple
+    type_params:
+      measure: revenue_orders
+
+  - name: aov
+    label: Average order value
+    description: revenue / orders.
+    type: ratio
+    type_params:
+      numerator: revenue
+      denominator: orders
+
+  - name: conversion_rate
+    label: Conversion rate
+    description: Sessions with a checkout_started event / all sessions.
+    type: ratio
+    type_params:
+      numerator: checkout_sessions
+      denominator: sessions
+
+  - name: late_delivery_rate
+    label: Late-delivery rate
+    description: >
+      Delivered orders with order_delivered_customer_ts_utc > order_estimated_delivery_ts_utc /
+      delivered orders.
+    type: ratio
+    type_params:
+      numerator: late_delivered_orders
+      denominator: delivered_orders

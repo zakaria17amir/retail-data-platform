@@ -17,5 +17,5 @@ models:
       +materialized: table
       +schema: intermediate
     marts:
-      +materialized: table
+      +materialized: "{{ 'external' if target.type == 'duckdb' else 'table' }}"
       +schema: marts

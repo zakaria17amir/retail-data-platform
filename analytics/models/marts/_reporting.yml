@@ -1,0 +1,138 @@
+models:
+  - name: rpt_daily_sales
+    description: >
+      Grain purchase date (local) x customer state. Revenue = sum(price + freight_value) of
+      revenue-order items; orders = distinct revenue orders; aov = revenue / orders.
+    config:
+      cluster_by: [order_purchase_date]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_purchase_date, customer_state]
+    columns:
+      - name: order_purchase_date
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: revenue
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+      - name: aov
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+
+  - name: rpt_customer_360
+    description: >
+      Grain customer_unique_id, customers with at least one revenue order. Recency in days from
+      the last revenue order to the latest purchase date in the data; frequency = revenue orders;
+      monetary = ltv = revenue; r/f/m scores 1-5 by ntile (5 = best); orders counts all statuses.
+    config:
+      cluster_by: [customer_unique_id]
+    columns:
+      - name: customer_unique_id
+        data_tests: [not_null, unique]
+      - name: monetary
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+      - name: recency_score
+        data_tests: &rfm_score
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 1
+                max_value: 5
+      - name: frequency_score
+        data_tests: *rfm_score
+      - name: monetary_score
+        data_tests: *rfm_score
+
+  - name: rpt_product_performance
+    description: >
+      Grain product_id x purchase month over revenue-order items: units, revenue, average review
+      score of the orders and late rate of their delivered orders (each order counted once).
+    config:
+      cluster_by: [order_month]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [product_id, order_month]
+    columns:
+      - name: product_id
+        data_tests: [not_null]
+      - name: order_month
+        data_tests: [not_null]
+      - name: revenue
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+      - name: late_rate
+        data_tests: &unit_interval
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+                max_value: 1
+
+  - name: rpt_funnel
+    description: >
+      Grain session date: sessions (anonymous included) and sessions reaching product_view,
+      add_to_cart and checkout_started; conversion_rate = checkout sessions / sessions.
+    config:
+      cluster_by: [session_date]
+    columns:
+      - name: session_date
+        data_tests: [not_null, unique]
+      - name: conversion_rate
+        data_tests: *unit_interval
+
+  - name: rpt_delivery_sla
+    description: >
+      Grain purchase month x customer state over delivered orders: delivered, late
+      (delivered after the estimate), late_rate = late / delivered, average purchase-to-customer
+      hours.
+    config:
+      cluster_by: [order_month]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [order_month, customer_state]
+    columns:
+      - name: order_month
+        data_tests: [not_null]
+      - name: late_rate
+        data_tests: *unit_interval
+
+  - name: rpt_data_quality
+    description: >
+      Silver data quality history: one row per run/table/rule from _rule_metrics (rejects and
+      pct) and per run/table/expectation from _dq_results (success), told apart by check_type.
+    config:
+      cluster_by: [checked_at]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [check_type, run_id, table_name, check_name]
+    columns:
+      - name: check_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [silver_rule, dq_expectation]
+      - name: run_id
+        data_tests: [not_null]
+      - name: pct_rejected
+        description: Percent (0-100) of rows_in rejected by the rule.
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 0
+                max_value: 100

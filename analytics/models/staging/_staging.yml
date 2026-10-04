@@ -88,3 +88,15 @@ models:
     columns:
       - name: event_id
         data_tests: [not_null, unique]
+
+  - name: stg_rule_metrics
+    description: One row per silver run/table/rule (silver _rule_metrics), `table` renamed to table_name.
+    columns:
+      - name: run_id
+        data_tests: [not_null]
+
+  - name: stg_dq_results
+    description: One row per quality run/table/expectation (silver _dq_results), `table` renamed to table_name.
+    columns:
+      - name: run_id
+        data_tests: [not_null]
