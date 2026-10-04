@@ -323,6 +323,7 @@ services:
         : "$${HOST_REPO_DIR:?set HOST_REPO_DIR in .env (PWD is not exported by this shell)}"
         (umask 077 && python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
           > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE")
+        airflow pools set ml 1 "serialise ml jobs (feast file registry)"
         exec airflow standalone
     environment:
       <<: *airflow-env
@@ -348,6 +349,8 @@ services:
       GOLD_DIR: /opt/airflow/data/gold
       # train DAGs pass it as --promotion-mode to the retail-ml containers
       PROMOTION_MODE: ${PROMOTION_MODE:-auto}
+      # monitor breaches retrain at most once per cooldown
+      RETRAIN_COOLDOWN_HOURS: ${RETRAIN_COOLDOWN_HOURS:-72}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:

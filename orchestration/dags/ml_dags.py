@@ -1,8 +1,8 @@
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
-from airflow.sdk import DAG, TriggerRule
+from airflow.sdk import DAG, TriggerRule, task
 from common import GOLD, START, default_args
-from ml_common import FEATURES, SCORES, ml_task, train_args
+from ml_common import FEATURES, SCORES, breach_alert, ml_task, retrain_due, train_args
 
 
 def ml_dag(dag_id: str, schedule: object) -> DAG:
@@ -34,10 +34,12 @@ with ml_dag("forecast_demand", [FEATURES]):
 with ml_dag("monitor_late_delivery", [SCORES]):
     # exit 3 = drift/performance breach -> skipped; any other non-zero exit fails (and retries)
     monitor = ml_task("monitor", ["monitor", "late_delivery"], s3=True, skip_on_exit_code=3)
-    monitor >> TriggerDagRunOperator(
-        task_id="retrain",
-        trigger_dag_id="train_late_delivery",
-        trigger_rule=TriggerRule.ALL_SKIPPED,
+    # breach path (monitor skipped): alert always, retrain unless in cooldown or manual promotion
+    monitor >> task(trigger_rule=TriggerRule.ALL_SKIPPED)(breach_alert)()
+    (
+        monitor
+        >> task.short_circuit(trigger_rule=TriggerRule.ALL_SKIPPED)(retrain_due)()
+        >> TriggerDagRunOperator(task_id="retrain", trigger_dag_id="train_late_delivery")
     )
     # run state follows the leaves: this one fails the run when monitor fails
     monitor >> EmptyOperator(task_id="healthy")

@@ -112,7 +112,11 @@ BUILT = {"run": "built", "end": "2026-10-04T04:02:31Z", "publish_gold": "success
 SHORT_CIRCUITED = {"run": "skipped", "end": "2026-10-04T05:00:00Z", "publish_gold": "skipped"}
 
 
-def fake_api(monkeypatch: pytest.MonkeyPatch, runs: list[dict[str, str]]) -> list[Any]:
+def fake_api(
+    monkeypatch: pytest.MonkeyPatch,
+    runs: list[dict[str, str]],
+    train_runs: list[dict[str, str]] | None = None,
+) -> list[Any]:
     sent: list[Any] = []
 
     def urlopen(req: Any, timeout: float) -> Any:
@@ -128,6 +132,11 @@ def fake_api(monkeypatch: pytest.MonkeyPatch, runs: list[dict[str, str]]) -> lis
             body = {
                 "task_instances": [{"dag_run_id": r["run"], "end_date": r["end"]} for r in rows]
             }
+        elif url.path == "/api/v2/dags/train_late_delivery/dagRuns":
+            assert q["order_by"] == "-end_date"
+            rows = sorted(train_runs or [], key=lambda r: r["end"], reverse=True)
+            rows = [r for r in rows if r["state"] == q["state"]][: int(q["limit"])]
+            body = {"dag_runs": [{"dag_run_id": r["run"], "end_date": r["end"]} for r in rows]}
         else:
             raise AssertionError(req.full_url)
         return contextlib.nullcontext(io.BytesIO(json.dumps(body).encode()))
@@ -224,7 +233,7 @@ def test_failure_callback_swallows_webhook_errors(
     monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
     with caplog.at_level(logging.ERROR, logger=common.log.name):
         common.on_failure({"ti": TI})  # type: ignore[typeddict-item]
-    assert "failure alert not sent" in caplog.text
+    assert "alert not sent" in caplog.text
 
 
 def test_failure_callback_log_url_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -332,18 +341,130 @@ def test_monitor_breach_triggers_retraining(dagbag: DagBag) -> None:
     monitor = dag.get_task("monitor")
     # exit 3 (breach) -> skipped, no retries; any other non-zero exit -> failed
     assert list(monitor.skip_on_exit_code) == [3]
+    # breach path: runs only when monitor skipped; skipped itself when monitor succeeds or fails
+    for task_id in ("breach_alert", "retrain_due"):
+        t = dag.get_task(task_id)
+        assert t.upstream_task_ids == {"monitor"}, task_id
+        assert t.trigger_rule == TriggerRule.ALL_SKIPPED, task_id
     retrain = dag.get_task("retrain")
     assert isinstance(retrain, TriggerDagRunOperator)
     assert retrain.trigger_dag_id == "train_late_delivery"
     assert retrain.trigger_dag_id in dagbag.dag_ids
-    assert retrain.upstream_task_ids == {"monitor"}
-    # runs only when monitor skipped (breach); skipped itself when monitor succeeds or fails
-    assert retrain.trigger_rule == TriggerRule.ALL_SKIPPED
+    # short-circuited by retrain_due (cooldown / manual promotion)
+    assert retrain.upstream_task_ids == {"retrain_due"}
+    assert retrain.trigger_rule == TriggerRule.ALL_SUCCESS
     # run state comes from the leaves: a failed monitor must fail the run, not hide behind retrain
     healthy = dag.get_task("healthy")
     assert healthy.upstream_task_ids == {"monitor"}
     assert healthy.trigger_rule == TriggerRule.ALL_SUCCESS
-    assert {t.task_id for t in dag.leaves} == {"retrain", "healthy"}
+    assert {t.task_id for t in dag.leaves} == {"breach_alert", "retrain", "healthy"}
+
+
+def test_every_ml_docker_task_uses_ml_pool(dagbag: DagBag) -> None:
+    # one ML container at a time: the feast file registry has no lock
+    docker = [
+        t for d in ML_DAG_IDS for t in dagbag.dags[d].tasks if t.task_type == "DockerOperator"
+    ]
+    assert len(docker) == 6
+    for t in docker:
+        assert t.pool == "ml", (t.dag_id, t.task_id)
+
+
+def retrain_due(dagbag: DagBag) -> Any:
+    return dagbag.dags["monitor_late_delivery"].get_task("retrain_due").python_callable
+
+
+TRAINED_4D_AGO = {"run": "old", "end": "2026-10-01T00:00:00Z", "state": "success"}
+TRAINED_1D_AGO = {"run": "new", "end": "2026-10-04T00:00:00Z", "state": "success"}
+FAILED_TRAIN = {"run": "bad", "end": "2026-10-04T12:00:00Z", "state": "failed"}
+NOW = datetime(2026, 10, 5, tzinfo=UTC)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> "FrozenDatetime":
+            return cls.fromtimestamp(NOW.timestamp(), tz)
+
+    monkeypatch.setattr(ml_common, "datetime", FrozenDatetime)
+
+
+def test_breach_retrains_when_due(
+    dagbag: DagBag, monkeypatch: pytest.MonkeyPatch, frozen_now: None
+) -> None:
+    monkeypatch.delenv("RETRAIN_COOLDOWN_HOURS", raising=False)  # default 72h
+    monkeypatch.setenv("PROMOTION_MODE", "auto")
+    sent = fake_api(monkeypatch, [], [TRAINED_4D_AGO, FAILED_TRAIN])
+    assert retrain_due(dagbag)() is True
+    login, runs = sent
+    assert login.full_url == "http://localhost:8080/auth/token"
+    assert runs.get_header("Authorization") == "Bearer tok"
+
+
+def test_breach_retrains_when_never_trained(
+    dagbag: DagBag, monkeypatch: pytest.MonkeyPatch, frozen_now: None
+) -> None:
+    monkeypatch.setenv("PROMOTION_MODE", "auto")
+    fake_api(monkeypatch, [], [FAILED_TRAIN])
+    assert retrain_due(dagbag)() is True
+
+
+def test_breach_within_cooldown_does_not_retrain(
+    dagbag: DagBag, monkeypatch: pytest.MonkeyPatch, frozen_now: None
+) -> None:
+    monkeypatch.delenv("RETRAIN_COOLDOWN_HOURS", raising=False)
+    monkeypatch.setenv("PROMOTION_MODE", "auto")
+    fake_api(monkeypatch, [], [TRAINED_4D_AGO, TRAINED_1D_AGO])
+    assert retrain_due(dagbag)() is False
+    monkeypatch.setenv("RETRAIN_COOLDOWN_HOURS", "12")
+    assert retrain_due(dagbag)() is True
+
+
+def test_breach_with_manual_promotion_does_not_retrain(
+    dagbag: DagBag, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PROMOTION_MODE", "manual")
+    monkeypatch.setattr(common.urllib.request, "urlopen", pytest.fail)
+    assert retrain_due(dagbag)() is False
+
+
+def breach_alert(dagbag: DagBag) -> Any:
+    return dagbag.dags["monitor_late_delivery"].get_task("breach_alert").python_callable
+
+
+def test_breach_alert_posts_json(dagbag: DagBag, monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[Any] = []
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://hook.test/x")
+    monkeypatch.setattr(
+        common.urllib.request,
+        "urlopen",
+        lambda req, timeout: sent.append(req) or contextlib.nullcontext(),
+    )
+    ti = SimpleNamespace(dag_id="monitor_late_delivery", task_id="breach_alert", run_id="r")
+    breach_alert(dagbag)(ti=ti)
+    (req,) = sent
+    assert req.full_url == "http://hook.test/x"
+    assert json.loads(req.data) == {
+        "dag": "monitor_late_delivery",
+        "task": "monitor",
+        "run_id": "r",
+        "reason": "monitor breach",
+    }
+
+
+def test_breach_alert_never_raises(dagbag: DagBag, monkeypatch: pytest.MonkeyPatch) -> None:
+    def urlopen(req: Any, timeout: float) -> None:
+        raise urllib.error.URLError("down")
+
+    ti = SimpleNamespace(dag_id="d", task_id="breach_alert", run_id="r")
+    monkeypatch.setenv("ALERT_WEBHOOK_URL", "http://hook.test/x")
+    monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
+    breach_alert(dagbag)(ti=ti)
+    monkeypatch.delenv("ALERT_WEBHOOK_URL")
+    monkeypatch.setattr(common.urllib.request, "urlopen", pytest.fail)
+    breach_alert(dagbag)(ti=ti)
+    breach_alert(dagbag)(ti=None)
 
 
 @pytest.mark.parametrize("mode", ["auto", "manual"])

@@ -1,9 +1,14 @@
+import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 from airflow.providers.docker.operators.docker import DockerOperator
 from airflow.sdk import Asset
+from common import api_get, gold_is_due, send_alert
 from docker.types import Mount
+
+log = logging.getLogger(__name__)
 
 FEATURES = Asset("redis://redis:6379/0/feast")
 SCORES = Asset("file:///opt/airflow/data/gold/ml/pred_late_delivery.parquet")
@@ -28,6 +33,32 @@ def train_args(model: str) -> list[str]:
     return ["train", model, "--promotion-mode", os.environ.get("PROMOTION_MODE") or "auto"]
 
 
+def retrain_due() -> bool:
+    # a breach persists until the model improves, so without a cooldown every daily monitor retrains
+    if (os.environ.get("PROMOTION_MODE") or "auto") == "manual":
+        log.info("PROMOTION_MODE=manual: breach left for a human, no retrain")
+        return False
+    hours = float(os.environ.get("RETRAIN_COOLDOWN_HOURS") or "72")
+    last = None
+    if hours > 0:
+        found = api_get(
+            "/api/v2/dags/train_late_delivery/dagRuns?state=success&order_by=-end_date&limit=1"
+        )["dag_runs"]
+        last = datetime.fromisoformat(found[0]["end_date"]) if found else None
+    due = gold_is_due(last, datetime.now(UTC), hours)
+    log.info("late_delivery last trained %s; cooldown %sh; retrain=%s", last, hours, due)
+    return due
+
+
+def breach_alert(ti: Any = None) -> None:
+    try:
+        send_alert(
+            {"dag": ti.dag_id, "task": "monitor", "run_id": ti.run_id, "reason": "monitor breach"}
+        )
+    except Exception:
+        log.exception("breach alert not sent")
+
+
 def ml_task(task_id: str, args: list[str], s3: bool = False, **kwargs: Any) -> DockerOperator:
     env = {
         "MLFLOW_TRACKING_URI": "http://mlflow:5000",
@@ -48,6 +79,8 @@ def ml_task(task_id: str, args: list[str], s3: bool = False, **kwargs: Any) -> D
             or f"s3://{bucket}/monitoring",
         }
     repo = os.environ["HOST_REPO_DIR"]
+    # 1-slot pool: ML jobs write the feast file registry, which has no lock
+    kwargs.setdefault("pool", "ml")
     return DockerOperator(
         task_id=task_id,
         image="retail-ml",
