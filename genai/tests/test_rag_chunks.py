@@ -11,6 +11,7 @@ from genai.enrichment.prompt import REVIEW_OPEN
 from genai.enrichment.writer import ENRICHED, ENRICHED_SCHEMA
 from genai.rag.chunks import (
     MIN_REVIEWS,
+    TOKEN,
     Product,
     Reject,
     chunk_id,
@@ -20,6 +21,7 @@ from genai.rag.chunks import (
     load_reviews,
     product_text,
     summarize,
+    summary_messages,
     truncate_tokens,
 )
 
@@ -97,6 +99,15 @@ def test_summarize_delimits_reviews_and_returns_a_summary_chunk() -> None:
     system, user = llm.calls[0][0]
     assert "untrusted" in system["content"]
     assert user["content"].count(REVIEW_OPEN) == 3
+
+
+def test_summary_prompt_is_bounded_for_a_small_context_window() -> None:
+    reviews = [" ".join(f"palavra{i}" for i in range(1000)) for _ in range(20)]
+    messages = summary_messages(prod(), reviews)
+    approx_tokens = sum(len(TOKEN.findall(m["content"])) for m in messages)
+    assert messages[1]["content"].count(REVIEW_OPEN) <= 8
+    # ~2x headroom for a real tokenizer keeps the prompt under ~6k tokens
+    assert approx_tokens <= 3000
 
 
 def test_summarize_retries_with_feedback_then_rejects() -> None:
