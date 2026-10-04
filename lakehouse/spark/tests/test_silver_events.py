@@ -13,7 +13,7 @@ EVENT_SCHEMA = (
     "event_id string, event_type string, session_id string, customer_id string, device string, "
     "referrer string, event_ts string, product_id string, search_query string, quantity int, "
     "order_id string, utm_campaign string, _bronze_ingest_ts timestamp, kafka_partition int, "
-    "kafka_offset long"
+    "kafka_offset long, rank int, rec_model_version string, rec_strategy string"
 )
 INGEST = datetime(2017, 7, 1, 12, 0, 0)
 
@@ -26,10 +26,12 @@ def _event(
     ingest: datetime = INGEST,
     offset: int = 0,
     partition: int = 0,
+    event_type: str = "page_view",
+    rank: int | None = None,
 ) -> tuple[Any, ...]:
     return (
         event_id,
-        "page_view",
+        event_type,
         session_id,
         "c1",
         "web",
@@ -43,6 +45,9 @@ def _event(
         ingest,
         partition,
         offset,
+        rank,
+        None if rank is None else "v1",
+        None if rank is None else "rerank",
     )
 
 
@@ -89,6 +94,31 @@ def test_event_negative_quantity(spark: SparkSession) -> None:
 
     assert _rejects(rejected) == [("event_negative_quantity", "neg")]
     assert sorted(r.event_id for r in kept.collect()) == ["none", "zero"]
+
+
+def test_feedback_missing_rank(spark: SparkSession) -> None:
+    df = _events(
+        spark,
+        [
+            _event("shown_no_rank", event_type="recommendation_shown"),
+            _event("clicked_no_rank", event_type="recommendation_clicked"),
+            _event("shown", event_type="recommendation_shown", rank=1),
+            _event("clicked", event_type="recommendation_clicked", rank=3),
+            _event("view_no_rank"),
+        ],
+    )
+    kept, rejected, _ = apply_rules(df, event_rules(None))
+
+    assert _rejects(rejected) == [
+        ("feedback_missing_rank", "clicked_no_rank"),
+        ("feedback_missing_rank", "shown_no_rank"),
+    ]
+    got = {r.event_id: (r.rank, r.rec_model_version, r.rec_strategy) for r in kept.collect()}
+    assert got == {
+        "shown": (1, "v1", "rerank"),
+        "clicked": (3, "v1", "rerank"),
+        "view_no_rank": (None, None, None),
+    }
 
 
 def test_event_duplicate_within_batch_and_vs_existing(spark: SparkSession) -> None:
@@ -157,6 +187,7 @@ def test_session_over_24h_uses_existing_start(spark: SparkSession) -> None:
         "event_cast_failed",
         "ts_localise",
         "event_negative_quantity",
+        "feedback_missing_rank",
         "event_duplicate",
         "session_over_24h",
     ]

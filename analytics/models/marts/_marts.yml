@@ -211,7 +211,61 @@ models:
       - name: event_type
         data_tests: [not_null]
 
+  - name: fct_recommendations
+    description: >
+      Grain recommendation_shown event (one item at one rank of one /recommend response).
+      is_clicked when a recommendation_clicked event has the same session, product and rank and
+      the same event_ts_utc (both carry the triggering event's dataset time, so a click is not
+      attributed to the same item shown at that rank by another /recommend call of the session).
+    columns:
+      - name: event_id
+        data_tests: [not_null, unique]
+      - name: session_id
+        data_tests: [not_null]
+      - name: product_id
+        data_tests: [not_null]
+      - name: rank
+        data_tests:
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_between:
+              arguments:
+                min_value: 1
+      - name: event_date
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: is_clicked
+        data_tests: [not_null]
+
 unit_tests:
+  - name: fct_recommendations_click_attribution
+    description: >
+      A click flags only the shown row with its session, product, rank and trigger time: the
+      same item shown at the same rank by an earlier call of the session stays unclicked, a
+      redelivered click does not fan out, and a click at another rank or in another session
+      flags nothing.
+    model: fct_recommendations
+    given:
+      - input: ref('stg_clickstream')
+        rows:
+          - {event_id: v1, event_type: product_view, session_id: s1, product_id: p0, event_ts_utc: "2017-01-01 10:00:00+00", event_date: "2017-01-01"}
+          - {event_id: sh1, event_type: recommendation_shown, session_id: s1, product_id: p1, rank: 1, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:00:00+00", event_date: "2017-01-01"}
+          - {event_id: sh2, event_type: recommendation_shown, session_id: s1, product_id: p2, rank: 2, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:00:00+00", event_date: "2017-01-01"}
+          - {event_id: sh3, event_type: recommendation_shown, session_id: s1, product_id: p1, rank: 1, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:05:00+00", event_date: "2017-01-01"}
+          - {event_id: sh4, event_type: recommendation_shown, session_id: s2, product_id: p1, rank: 1, rec_model_version: null, rec_strategy: global_popularity, event_ts_utc: "2017-01-01 10:05:00+00", event_date: "2017-01-01"}
+          - {event_id: c1, event_type: recommendation_clicked, session_id: s1, product_id: p1, rank: 1, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:05:00+00", event_date: "2017-01-01"}
+          - {event_id: c1_dup, event_type: recommendation_clicked, session_id: s1, product_id: p1, rank: 1, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:05:00+00", event_date: "2017-01-01"}
+          - {event_id: c2, event_type: recommendation_clicked, session_id: s1, product_id: p2, rank: 3, rec_model_version: "3", rec_strategy: rerank, event_ts_utc: "2017-01-01 10:00:00+00", event_date: "2017-01-01"}
+    expect:
+      rows:
+        - {event_id: sh1, session_id: s1, product_id: p1, rank: 1, model_version: "3", strategy: rerank, is_clicked: false}
+        - {event_id: sh2, session_id: s1, product_id: p2, rank: 2, model_version: "3", strategy: rerank, is_clicked: false}
+        - {event_id: sh3, session_id: s1, product_id: p1, rank: 1, model_version: "3", strategy: rerank, is_clicked: true}
+        - {event_id: sh4, session_id: s2, product_id: p1, rank: 1, model_version: null, strategy: global_popularity, is_clicked: false}
+
   - name: fct_orders_point_in_time_customer
     description: >
       Before a key's first version -> first version; after a change -> new version; after a

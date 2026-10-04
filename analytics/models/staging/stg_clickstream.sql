@@ -14,5 +14,8 @@ select
     utm_campaign,
     event_date,
     _bronze_ingest_ts,
-    _silver_loaded_at
+    _silver_loaded_at,
+    rank,
+    rec_model_version,
+    rec_strategy
 from {{ source('silver', 'clickstream') }}

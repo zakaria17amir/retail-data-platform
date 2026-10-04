@@ -28,6 +28,14 @@ def _negative_quantity(df: DataFrame) -> tuple[DataFrame, DataFrame]:
     return df.filter(~bad), df.filter(bad).withColumn("reason", F.lit("quantity < 0"))
 
 
+def _missing_rank(df: DataFrame) -> tuple[DataFrame, DataFrame]:
+    feedback = F.col("event_type").isin("recommendation_shown", "recommendation_clicked")
+    bad = feedback & F.col("rank").isNull()
+    return df.filter(~bad), df.filter(bad).withColumn(
+        "reason", F.lit("feedback event without rank")
+    )
+
+
 def event_rules(existing: DataFrame | None) -> tuple[Rule, ...]:
     def duplicate(df: DataFrame) -> tuple[DataFrame, DataFrame]:
         first = Window.partitionBy("event_id").orderBy(
@@ -67,6 +75,7 @@ def event_rules(existing: DataFrame | None) -> tuple[Rule, ...]:
             "ts_localise", "event_ts → event_ts_local (ntz), event_ts_utc, event_date", _localise
         ),
         Rule("event_negative_quantity", "quantity below zero", _negative_quantity),
+        Rule("feedback_missing_rank", "recommendation shown/clicked without rank", _missing_rank),
         Rule("event_duplicate", "event_id repeated in batch or already in silver", duplicate),
         Rule("session_over_24h", "event beyond 24 h of its session start", over_24h),
     )

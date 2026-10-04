@@ -40,3 +40,13 @@ metrics:
     type_params:
       numerator: late_delivered_orders
       denominator: delivered_orders
+
+  - name: recommendation_ctr
+    label: Recommendation CTR
+    description: >
+      Clicked / shown recommendation impressions over fct_recommendations (a click is attributed
+      on session + product + rank + trigger time).
+    type: ratio
+    type_params:
+      numerator: recommendations_clicked
+      denominator: recommendations_shown

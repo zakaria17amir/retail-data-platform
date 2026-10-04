@@ -55,7 +55,12 @@ EVENT_FIELDS = (
     "quantity",
     "order_id",
     "utm_campaign",
+    "rank",
+    "rec_model_version",
+    "rec_strategy",
 )
+INT_EVENT_FIELDS = ("quantity", "rank")
+# v3 columns last: Delta schema evolution appends them, so new and evolved tables share one order
 EVENT_COLUMNS = (
     "event_id",
     "event_type",
@@ -74,11 +79,16 @@ EVENT_COLUMNS = (
     "_bronze_ingest_ts",
     "_silver_loaded_at",
     "_run_id",
+    "rank",
+    "rec_model_version",
+    "rec_strategy",
 )
 EVENT_BRONZE_SCHEMA = StructType(
     [
-        *(StructField(c, StringType()) for c in EVENT_FIELDS if c != "quantity"),
-        StructField("quantity", IntegerType()),
+        *(
+            StructField(c, IntegerType() if c in INT_EVENT_FIELDS else StringType())
+            for c in EVENT_FIELDS
+        ),
         StructField("ingest_ts", TimestampType()),
         StructField("kafka_partition", IntegerType()),
         StructField("kafka_offset", LongType()),
@@ -122,7 +132,9 @@ def cdc_rules(spec: TableSpec, spark: SparkSession, silver: str) -> tuple[Rule, 
 
 def events_input(bronze: DataFrame) -> DataFrame:
     fields = [
-        F.col(c) if c in bronze.columns else F.lit(None).cast("string").alias(c)
+        F.col(c)
+        if c in bronze.columns
+        else F.lit(None).cast(EVENT_BRONZE_SCHEMA[c].dataType).alias(c)
         for c in EVENT_FIELDS
     ]
     return bronze.select(
@@ -131,9 +143,6 @@ def events_input(bronze: DataFrame) -> DataFrame:
 
 
 def merge_events(spark: SparkSession, rows: DataFrame, path: str) -> None:
-    if not DeltaTable.isDeltaTable(spark, path):
-        rows.write.format("delta").partitionBy("event_date").save(path)
-        return
     (
         DeltaTable.forPath(spark, path)
         .alias("t")
@@ -166,12 +175,18 @@ def with_load_meta(df: DataFrame, run_id: str) -> DataFrame:
     return df.withColumns({"_silver_loaded_at": F.current_timestamp(), "_run_id": F.lit(run_id)})
 
 
-def create_empty_events(spark: SparkSession, path: str, run_id: str) -> None:
+def ensure_events_table(spark: SparkSession, path: str, run_id: str) -> None:
+    """Create the events table, or add contract columns it lacks (Delta schema evolution)."""
+    existing = read_if_exists(spark, path)
+    if existing is not None and set(EVENT_COLUMNS) <= set(existing.columns):
+        return
     # same lineage as a real batch, so the schema matches what later MERGEs insert
     empty = spark.createDataFrame([], EVENT_BRONZE_SCHEMA)
     kept, _, _ = apply_rules(events_input(empty), event_rules(None))
     rows = with_load_meta(kept, run_id).select(*EVENT_COLUMNS)
-    rows.write.format("delta").partitionBy("event_date").save(path)
+    rows.write.format("delta").mode("append").option("mergeSchema", "true").partitionBy(
+        "event_date"
+    ).save(path)
 
 
 def process_batch(
@@ -266,14 +281,14 @@ def run_source(spark: SparkSession, spec: TableSpec, source: str, root: str, run
 
 def run_table(spark: SparkSession, spec: TableSpec, root: str, run_id: str) -> None:
     processed = 0
+    path = f"{root}/silver/{spec.name}"
+    if spec.mode == "events":
+        ensure_events_table(spark, path, run_id)
     for source in spec.bronze:
         if not DeltaTable.isDeltaTable(spark, f"{root}/bronze/{source}"):
             log.info("%s: bronze/%s does not exist yet, skipped", spec.name, source)
             continue
         processed += run_source(spark, spec, source, root, run_id)
-    path = f"{root}/silver/{spec.name}"
-    if spec.mode == "events" and not DeltaTable.isDeltaTable(spark, path):
-        create_empty_events(spark, path, run_id)
     if spec.name == "geo/geolocation_points":
         points = read_if_exists(spark, path)
         centroids_path = f"{root}/silver/geo/zip_centroids"

@@ -16,7 +16,15 @@ OLIST_TABLES = (
     "products",
     "sellers",
 )
-EVENT_TYPES = ("add_to_cart", "checkout_started", "page_view", "product_view", "search")
+EVENT_TYPES = (
+    "add_to_cart",
+    "checkout_started",
+    "page_view",
+    "product_view",
+    "recommendation_clicked",
+    "recommendation_shown",
+    "search",
+)
 QUARANTINE_SOURCES = ("events", "olist")
 SILVER_TABLES = (
     "catalog/categories",
