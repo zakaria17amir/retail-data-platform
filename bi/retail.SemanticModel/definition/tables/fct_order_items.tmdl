@@ -60,10 +60,10 @@ table fct_order_items
 		summarizeBy: sum
 		sourceColumn: freight_value
 
-	column is_revenue_order
+	column is_deleted
 		dataType: boolean
 		summarizeBy: none
-		sourceColumn: is_revenue_order
+		sourceColumn: is_deleted
 
 	column order_purchase_date
 		dataType: dateTime
@@ -72,6 +72,11 @@ table fct_order_items
 		sourceColumn: order_purchase_date
 
 		annotation UnderlyingDateTimeDataType = Date
+
+	column is_revenue_order
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_revenue_order
 
 	column item_revenue
 		dataType: decimal

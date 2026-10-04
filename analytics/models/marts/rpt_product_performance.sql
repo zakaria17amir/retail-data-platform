@@ -15,6 +15,7 @@ reviews as (
         order_id,
         avg(review_score) as review_score
     from {{ ref('fct_reviews') }}
+    where not is_deleted
     group by order_id
 ),
 

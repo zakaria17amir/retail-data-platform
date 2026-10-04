@@ -40,6 +40,11 @@ table fct_reviews
 		summarizeBy: none
 		sourceColumn: review_answer_ts_utc
 
+	column is_deleted
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_deleted
+
 	partition fct_reviews = m
 		mode: import
 		source =

@@ -26,6 +26,7 @@ items as (
         count(*) as item_count,
         sum(price + freight_value) as item_revenue
     from {{ ref('stg_order_items') }}
+    where not _is_deleted
     group by order_id
 ),
 
@@ -34,6 +35,7 @@ payments as (
         order_id,
         sum(payment_value) as payment_value
     from {{ ref('stg_order_payments') }}
+    where not _is_deleted
     group by order_id
 )
 

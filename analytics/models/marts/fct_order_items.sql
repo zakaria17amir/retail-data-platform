@@ -27,8 +27,9 @@ select
     items.shipping_limit_ts_utc,
     items.price,
     items.freight_value,
-    orders.is_revenue_order,
+    items._is_deleted as is_deleted,
     cast(orders.order_purchase_ts_local as date) as order_purchase_date,
+    coalesce(orders.is_revenue_order and not items._is_deleted, false) as is_revenue_order,
     items.price + items.freight_value as item_revenue
 from items
 left join orders on items.order_id = orders.order_id

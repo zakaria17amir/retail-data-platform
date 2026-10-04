@@ -90,7 +90,7 @@ models:
         data_tests: [not_null, unique]
 
   - name: stg_rule_metrics
-    description: One row per silver run/table/rule (silver _rule_metrics), `table` renamed to table_name.
+    description: One row per silver run/table/rule and micro-batch (silver _rule_metrics), `table` renamed to table_name.
     columns:
       - name: run_id
         data_tests: [not_null]

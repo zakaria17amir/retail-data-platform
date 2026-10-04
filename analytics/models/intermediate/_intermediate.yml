@@ -2,8 +2,8 @@ models:
   - name: int_order_lifecycle
     description: >
       One row per order with lifecycle durations in hours (UTC timestamps), delivery flags,
-      revenue flag, and item and payment totals aggregated separately so items x payments never
-      multiply.
+      revenue flag, and item and payment totals (CDC-deleted lines excluded) aggregated
+      separately so items x payments never multiply.
     columns:
       - name: order_id
         data_tests: [not_null, unique]
@@ -28,7 +28,7 @@ unit_tests:
   - name: int_order_lifecycle_items_and_payments_not_double_counted
     description: >
       2 items x 2 payments on one order; canceled/unavailable, deleted and item-less orders are
-      not revenue.
+      not revenue; a deleted item or payment of a live order does not count.
     model: int_order_lifecycle
     given:
       - input: ref('stg_orders')
@@ -40,15 +40,17 @@ unit_tests:
           - {order_id: o5, order_status: shipped, _is_deleted: false}
       - input: ref('stg_order_items')
         rows:
-          - {order_id: o1, order_item_id: 1, price: 10.00, freight_value: 2.00}
-          - {order_id: o1, order_item_id: 2, price: 20.00, freight_value: 3.00}
-          - {order_id: o2, order_item_id: 1, price: 50.00, freight_value: 5.00}
-          - {order_id: o4, order_item_id: 1, price: 7.00, freight_value: 1.00}
+          - {order_id: o1, order_item_id: 1, price: 10.00, freight_value: 2.00, _is_deleted: false}
+          - {order_id: o1, order_item_id: 2, price: 20.00, freight_value: 3.00, _is_deleted: false}
+          - {order_id: o1, order_item_id: 3, price: 99.00, freight_value: 9.00, _is_deleted: true}
+          - {order_id: o2, order_item_id: 1, price: 50.00, freight_value: 5.00, _is_deleted: false}
+          - {order_id: o4, order_item_id: 1, price: 7.00, freight_value: 1.00, _is_deleted: false}
       - input: ref('stg_order_payments')
         rows:
-          - {order_id: o1, payment_sequential: 1, payment_value: 20.00}
-          - {order_id: o1, payment_sequential: 2, payment_value: 15.00}
-          - {order_id: o2, payment_sequential: 1, payment_value: 55.00}
+          - {order_id: o1, payment_sequential: 1, payment_value: 20.00, _is_deleted: false}
+          - {order_id: o1, payment_sequential: 2, payment_value: 15.00, _is_deleted: false}
+          - {order_id: o1, payment_sequential: 3, payment_value: 108.00, _is_deleted: true}
+          - {order_id: o2, payment_sequential: 1, payment_value: 55.00, _is_deleted: false}
     expect:
       rows:
         - {order_id: o1, item_count: 2, item_revenue: 35.00, payment_value: 35.00, is_revenue_order: true, is_deleted: false}

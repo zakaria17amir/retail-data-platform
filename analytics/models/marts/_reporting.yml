@@ -119,8 +119,9 @@ models:
 
   - name: rpt_data_quality
     description: >
-      Silver data quality history: one row per run/table/rule from _rule_metrics (rejects and
-      pct) and per run/table/expectation from _dq_results (success), told apart by check_type.
+      Silver data quality history: one row per run/table/rule from _rule_metrics (micro-batch
+      rows summed; pct recomputed from the sums) and per run/table/expectation from _dq_results
+      (success), told apart by check_type.
     config:
       cluster_by: [checked_at]
     data_tests:
@@ -144,6 +145,24 @@ models:
                 max_value: 100
 
 unit_tests:
+  - name: rpt_data_quality_rule_metrics_summed_per_run
+    description: >
+      The silver job writes one _rule_metrics row per micro-batch; two batches of one
+      run/table/rule become one row with summed counts and the pct recomputed from the sums.
+    model: rpt_data_quality
+    given:
+      - input: ref('stg_rule_metrics')
+        rows:
+          - {run_id: r1, table_name: orders, rule_id: not_null_pk, rows_in: 100, rows_rejected: 10, pct_rejected: 10.0, run_ts: "2017-01-01 10:00:00+00"}
+          - {run_id: r1, table_name: orders, rule_id: not_null_pk, rows_in: 300, rows_rejected: 10, pct_rejected: 3.33, run_ts: "2017-01-01 10:05:00+00"}
+          - {run_id: r1, table_name: orders, rule_id: valid_status, rows_in: 0, rows_rejected: 0, pct_rejected: null, run_ts: "2017-01-01 10:00:00+00"}
+      - input: ref('stg_dq_results')
+        rows: []
+    expect:
+      rows:
+        - {check_type: silver_rule, run_id: r1, table_name: orders, check_name: not_null_pk, rows_in: 400, rows_rejected: 20, pct_rejected: 5.0, checked_at: "2017-01-01 10:05:00+00"}
+        - {check_type: silver_rule, run_id: r1, table_name: orders, check_name: valid_status, rows_in: 0, rows_rejected: 0, pct_rejected: null, checked_at: "2017-01-01 10:00:00+00"}
+
   - name: rpt_customer_360_equal_customers_get_equal_scores
     description: >
       u_a and u_b have identical recency/frequency/monetary and must share every score;

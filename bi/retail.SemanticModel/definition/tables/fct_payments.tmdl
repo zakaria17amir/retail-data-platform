@@ -25,6 +25,11 @@ table fct_payments
 		summarizeBy: sum
 		sourceColumn: payment_value
 
+	column is_deleted
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_deleted
+
 	partition fct_payments = m
 		mode: import
 		source =

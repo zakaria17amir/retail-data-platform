@@ -3,5 +3,6 @@ select
     payment_sequential,
     payment_type,
     payment_installments,
-    payment_value
+    payment_value,
+    _is_deleted as is_deleted
 from {{ ref('stg_order_payments') }}
