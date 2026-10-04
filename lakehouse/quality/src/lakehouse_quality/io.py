@@ -50,7 +50,7 @@ def bronze_distinct_keys(root: str, bronze_table: str, key: Sequence[str]) -> in
     keys = pa.table(
         {k: pc.coalesce(pc.struct_field(after, k), pc.struct_field(before, k)) for k in key}
     )
-    return int(keys.group_by(list(key)).aggregate([]).num_rows)
+    return int(keys.drop_null().group_by(list(key)).aggregate([]).num_rows)
 
 
 def rejected_distinct_keys(root: str, table: str, key: Sequence[str]) -> int:
@@ -59,4 +59,5 @@ def rejected_distinct_keys(root: str, table: str, key: Sequence[str]) -> int:
     except TableNotFoundError:
         return 0
     rows = (json.loads(raw) for raw in records["record_json"].to_pylist())
-    return len({tuple(str(row.get(k)) for k in key) for row in rows})
+    keys = (tuple(row.get(k) for k in key) for row in rows)
+    return len({tuple(map(str, k)) for k in keys if None not in k})

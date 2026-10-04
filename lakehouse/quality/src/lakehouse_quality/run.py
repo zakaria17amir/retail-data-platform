@@ -46,15 +46,15 @@ def main(argv: list[str] | None = None) -> int:
         }
         for c in checks
     ]
+    for c in checks:
+        status = "PASS" if c.success else "FAIL"
+        print(f"{status} {c.severity} {c.table} {c.expectation} observed={c.observed} {c.details}")
     write_deltalake(
         f"{root}/silver/_dq_results",
         pa.Table.from_pylist(rows, schema=DQ_SCHEMA),
         mode="append",
         storage_options=storage_options(root),
     )
-    for c in checks:
-        status = "PASS" if c.success else "FAIL"
-        print(f"{status} {c.severity} {c.table} {c.expectation} observed={c.observed} {c.details}")
     return int(any(c.severity == "critical" and not c.success for c in checks))
 
 

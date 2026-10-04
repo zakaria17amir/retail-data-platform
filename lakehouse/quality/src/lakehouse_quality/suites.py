@@ -2,7 +2,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 import great_expectations as gx
 import great_expectations.expectations as gxe
@@ -159,6 +159,12 @@ REFERENCES = (
 Validate = Callable[[str, pd.DataFrame, gxe.Expectation, Severity], Check]
 
 
+def gx_errors(info: dict[str, Any]) -> list[str]:
+    # GX 1.x: flat {raised_exception, exception_message, ...} or nested per metric id
+    shapes = [info, *(v for v in info.values() if isinstance(v, dict))]
+    return [str(s.get("exception_message")) for s in shapes if s.get("raised_exception")]
+
+
 def _validator() -> Validate:
     context = gx.get_context(
         mode="ephemeral",
@@ -179,9 +185,7 @@ def _validator() -> Validate:
             getattr(expectation, "column_list", None) or ()
         )
         name = f"{expectation.expectation_type}({arg})" if arg else expectation.expectation_type
-        errors = [
-            v["exception_message"] for v in result.exception_info.values() if isinstance(v, dict)
-        ]
+        errors = gx_errors(result.exception_info or {})
         observed = result.result.get("unexpected_count", result.result.get("observed_value"))
         details = (
             errors or result.result.get("details") or result.result.get("partial_unexpected_list")
@@ -199,9 +203,13 @@ def _pandas(
 ) -> Check:
     try:
         success, observed, details = fn(*args)
-    except KeyError as e:
-        success, observed, details = False, "error", f"missing column {e}"
+    except Exception as e:
+        success, observed, details = False, "error", _error(e)
     return Check(table, name, severity, success, observed, details)
+
+
+def _error(e: Exception) -> str:
+    return f"{type(e).__name__}: {e}"
 
 
 def _rowcount(
@@ -241,8 +249,8 @@ def _freight(validate: Validate, items: pd.DataFrame, orders: pd.DataFrame) -> C
         cutoff = ts.max() - timedelta(days=30)
         history = joined.loc[ts <= cutoff, "freight_value"].astype(float)
         recent = joined.loc[ts > cutoff, ["freight_value"]].astype(float)
-    except KeyError as e:
-        return Check("sales/order_items", name, "warning", False, "error", f"missing column {e}")
+    except Exception as e:
+        return Check("sales/order_items", name, "warning", False, "error", _error(e))
     if history.empty:
         return Check("sales/order_items", name, "warning", True, "no history", "")
     p99 = float(history.quantile(0.99))
@@ -264,6 +272,9 @@ def run_checks(root: str, now: datetime) -> list[Check]:
             rows = read_silver(root, table, current_only=False)
         except TableNotFoundError:
             checks.append(Check(table, "table_exists", "critical", False, "missing", ""))
+            continue
+        except Exception as e:
+            checks.append(Check(table, "table_readable", "critical", False, "error", _error(e)))
             continue
         current[table] = cur = current_rows(rows)
         columns = gxe.ExpectTableColumnsToMatchSet(column_set=list(spec.columns), exact_match=False)

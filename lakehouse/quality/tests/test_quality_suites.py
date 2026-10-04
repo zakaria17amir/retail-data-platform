@@ -1,3 +1,4 @@
+import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -7,9 +8,9 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 from deltalake import DeltaTable, write_deltalake
-from lakehouse_quality.io import bronze_distinct_keys, read_silver
+from lakehouse_quality.io import bronze_distinct_keys, read_silver, rejected_distinct_keys
 from lakehouse_quality.run import main
-from lakehouse_quality.suites import TABLES, Check, run_checks
+from lakehouse_quality.suites import TABLES, Check, gx_errors, run_checks
 
 LOADED = datetime(2026, 1, 1, 12, tzinfo=UTC)
 NOW = LOADED + timedelta(hours=1)
@@ -44,7 +45,7 @@ def _bronze(root: str, table: str, key: list[str], afters: list[Any], befores: l
             "before": pa.array(befores, type=struct),
         }
     )
-    write_deltalake(f"{root}/bronze/olist/{table}", data, mode="overwrite")
+    write_deltalake(f"{root}/bronze/olist/{table}", data, mode="overwrite", schema_mode="overwrite")
 
 
 def _cdc(root: str, silver: str, bronze: str, key: list[str], rows: list[dict[str, Any]]) -> None:
@@ -239,6 +240,75 @@ def test_rowcount_gap_is_critical(lake: str) -> None:
         ),
     )
     assert _failed(run_checks(lake, NOW)) == []
+
+
+def test_bronze_keys_skip_null_and_reject_rows_without_key(lake: str) -> None:
+    _bronze(lake, "orders", ["order_id"], [{"order_id": "o1"}, {"order_id": None}], [None, None])
+    assert bronze_distinct_keys(lake, "orders", ["order_id"]) == 1
+    write_deltalake(
+        f"{lake}/silver/_rejects/sales/orders",
+        pa.table({"record_json": ['{"order_id": "o3"}', '{"other": 1}', '{"order_id": null}']}),
+    )
+    assert rejected_distinct_keys(lake, "sales/orders", ["order_id"]) == 1
+
+
+def test_non_positive_price_is_critical(lake: str) -> None:
+    _silver(
+        lake,
+        "sales/order_items",
+        [
+            {
+                "order_id": o,
+                "order_item_id": "1",
+                "product_id": "p1",
+                "seller_id": "s1",
+                "price": Decimal(price),
+                "freight_value": Decimal("5.00"),
+            }
+            for o, price in (("o1", "0.00"), ("o2", "10.00"))
+        ],
+    )
+    failed = _failed(run_checks(lake, NOW))
+    assert [(c.table, c.expectation, c.severity) for c in failed] == [
+        ("sales/order_items", "expect_column_values_to_be_between(price)", "critical")
+    ]
+
+
+def test_missing_silver_table_is_critical(lake: str) -> None:
+    shutil.rmtree(f"{lake}/silver/geo/zip_centroids")
+    failed = _failed(run_checks(lake, NOW))
+    assert [(c.table, c.expectation, c.severity) for c in failed] == [
+        ("geo/zip_centroids", "table_exists", "critical")
+    ]
+
+
+def test_missing_key_column_surfaces_gx_message(lake: str) -> None:
+    rows = read_silver(lake, "sales/orders", current_only=False).drop(columns="order_id")
+    write_deltalake(f"{lake}/silver/sales/orders", rows, mode="overwrite", schema_mode="overwrite")
+    failed = {c.expectation: c for c in _failed(run_checks(lake, NOW)) if c.table == "sales/orders"}
+    not_null = failed["expect_column_values_to_not_be_null(order_id)"]
+    assert not_null.severity == "critical"
+    assert 'The column "order_id" in BatchData does not exist' in not_null.details
+    assert failed["rowcount_vs_bronze"].observed == "error"
+
+
+def test_gx_errors_handles_flat_and_nested_exception_info() -> None:
+    flat = {"raised_exception": True, "exception_message": "boom", "exception_traceback": "tb"}
+    nested = {"MetricConfigurationID(x)": flat}
+    ok = {"raised_exception": False, "exception_message": None, "exception_traceback": None}
+    assert gx_errors(flat) == ["boom"]
+    assert gx_errors(nested) == ["boom"]
+    assert gx_errors(ok) == []
+
+
+def test_bronze_read_error_is_recorded_not_raised(lake: str) -> None:
+    _bronze(lake, "orders", ["id"], [{"id": "o1"}], [None])
+    failed = {(c.table, c.expectation): c for c in _failed(run_checks(lake, NOW))}
+    rowcount = failed[("sales/orders", "rowcount_vs_bronze")]
+    assert (rowcount.severity, rowcount.observed) == ("critical", "error")
+    assert "order_id" in rowcount.details
+    assert main(["run", "--root", lake]) == 1
+    assert len(DeltaTable(f"{lake}/silver/_dq_results").to_pandas()) > 0
 
 
 def test_stale_table_is_warning(lake: str) -> None:
