@@ -16,10 +16,10 @@ from evidently.presets import DataDriftPreset  # type: ignore[import-untyped]
 from retail_ml.features import CATEGORICAL, NUMERIC, SELLER_FEATURES, order_features
 
 PREDICTION = "probability"
-# approve_month always drifts for a 7-day window against a year-long reference
+# approve_month always drifts for a 28-day window against a year-long reference
 DRIFT_NUMERIC = [c for c in NUMERIC if c != "approve_month"] + SELLER_FEATURES
 DRIFT_FEATURES = DRIFT_NUMERIC + CATEGORICAL
-# p-value tests (drift at p < 0.05) account for the small 7-day window; Evidently's default for a
+# p-value tests (drift at p < 0.05) account for the current window's size; Evidently's default for a
 # reference > 1000 rows (Wasserstein / Jensen-Shannon distance ≥ 0.1) is biased upward at n ≈ 50
 METHODS = {"num_method": "ks", "cat_method": "chisquare"}
 # chi-square is unreliable with sparse cells: levels under 5 % of the reference (and levels unseen

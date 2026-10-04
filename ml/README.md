@@ -30,16 +30,26 @@ uv run --project ml retail-ml monitor late_delivery                # exit 3 on d
 | `MIN_CURRENT_ROWS` | `30` | monitor: smaller current window → drift recorded, not gated |
 | `MIN_LABELLED` / `MIN_POSITIVES` | `100` / `10` | monitor: support a delayed-ground-truth week needs for its PR-AUC to gate |
 | `REFERENCE_SAMPLE_ROWS` | `10000` | monitor: seeded sample of the training window used as reference |
+| `MONITOR_WINDOW_DAYS` | `28` | monitor: current window length (days ending at the anchor) and the trailing-mean span of the anchor rule |
+| `MONITOR_TAIL_RATIO` | `0.2` | monitor: anchor = last approval day with ≥ this × its trailing mean daily approvals |
 
-Monitoring (`retail-ml monitor late_delivery`): the data is historical, so "now" is the latest
-approval among the scored orders in `pred_late_delivery.parquet`, and the current window is the
-scored orders approved in `(now − 7 d, now]`. Reference = a seeded sample of the champion's training
-window (approved < validation start) rebuilt from the training Parquet + Feast and scored by the
-champion — in-sample scores, so `prediction_drift` is biased towards drift and only reported.
-Drift uses KS / chi-square (p < 0.05) per feature — Evidently's default distance tests flag noise at
-a ~50-row window; categorical levels under 5 % of the reference are pooled as `__other__`. With 16
-features at p < 0.05, `drift_share > 0.3` needs ≥ 5 drifted columns (≈ 0.1 % by chance if
-independent). Delayed ground truth = scored orders that now have `is_late`, per approval week; breach
+Monitoring (`retail-ml monitor late_delivery`) runs a **simulated-live window over replayed
+data**. The open orders in `pred_late_delivery.parquet` (the dataset's end) are a thin straggler tail
+that never gets labels, so `monitor` does not read them: it builds its current set from
+`GOLD_DIR/ml/late_delivery_training.parquet`. Anchor ("now") = the last approval day whose order
+count is ≥ `MONITOR_TAIL_RATIO` × the mean daily count over the `MONITOR_WINDOW_DAYS` calendar days
+ending on it; current = all orders approved on the `MONITOR_WINDOW_DAYS` days ending at the anchor,
+scored by the champion (resolved version) with Feast seller features as of approval. On this data the
+window overlaps the champion's test window (`test_start`–`test_end` in `configs/late_delivery.yaml`),
+so its PR-AUC is a pipeline check, not an independent holdout. Reference = a seeded sample of the
+champion's training window (approved < validation start) rebuilt from the training Parquet + Feast
+and scored by the champion — in-sample scores, so `prediction_drift` is biased towards drift and only
+reported. Drift uses KS / chi-square (p < 0.05) per feature — Evidently's default distance tests flag
+noise at small windows; categorical levels under 5 % of the reference are pooled as `__other__`. With
+16 features at p < 0.05, `drift_share > 0.3` needs ≥ 5 drifted columns (≈ 0.1 % by chance if
+independent). Run from the host with `MLFLOW_ENABLE_PROXY_MULTIPART_DOWNLOAD=false`: the tracking
+server advertises presigned downloads whose URLs point at `minio:9000`, which only resolves inside
+Compose. Delayed ground truth = the current orders that have `is_late`, per approval week; breach
 when the latest week with ≥ `MIN_LABELLED` labels and ≥ `MIN_POSITIVES` positives has PR-AUC <
 champion `test_pr_auc` − 0.05 (smaller or single-class weeks are recorded, not gated). Rows
 (`run_ts, metric, value, window`) are appended to `GOLD_DIR/ml/ml_monitoring.parquet` and the breach

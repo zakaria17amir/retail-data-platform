@@ -1,9 +1,14 @@
 """`retail-ml monitor late_delivery`: drift + delayed ground truth → rows, exit code, HTML report.
 
-The data is historical, so "now" is the latest approval among the scored orders (not the wall
-clock); the current window is the scored orders approved in `(now − 7 days, now]`. The reference is
-a seeded sample of the champion's training window, scored by the champion (in-sample, so
-`prediction_drift` is biased towards drift and is never a breach condition).
+Simulated-live window over replayed data: the open orders at the dataset's end are a thin straggler
+tail that never gets labels, so the current set is built from the training contract instead. The
+anchor ("now") is the last approval day with ≥ `MONITOR_TAIL_RATIO` × its trailing
+`MONITOR_WINDOW_DAYS`-day mean of daily approvals; current = orders approved on the
+`MONITOR_WINDOW_DAYS` days ending at the anchor, scored by the champion with Feast seller features
+as of approval. On the historical data this window overlaps the champion's test window, so its
+delayed-ground-truth PR-AUC is not an independent holdout. The reference is a seeded sample of the
+champion's training window, scored by the champion (in-sample, so `prediction_drift` is biased
+towards drift and is never a breach condition).
 """
 
 from __future__ import annotations
@@ -31,7 +36,6 @@ from retail_ml.monitoring.drift import PREDICTION, drift_report, upload_report
 from retail_ml.monitoring.performance import PR_AUC_MARGIN, supported, weekly_performance
 
 BREACH = 3
-WINDOW = pd.Timedelta(days=7)
 SEED = 0
 COLUMNS = ["run_ts", "metric", "value", "window"]
 WEEKLY_METRICS = ("precision", "recall", "pr_auc", "n_labelled", "n_positives")
@@ -52,12 +56,13 @@ def report_root() -> str:
     return (os.environ.get("MONITORING_REPORT_ROOT") or "s3://lakehouse/monitoring").rstrip("/")
 
 
-def _read_scored(path: Path) -> pd.DataFrame:
-    """Latest score per order (the file may hold several scoring runs)."""
-    if not path.exists():
-        return pd.DataFrame(columns=["order_id", PREDICTION])
-    df = pd.read_parquet(path).sort_values("scored_ts", kind="stable")
-    return df.drop_duplicates("order_id", keep="last")[["order_id", PREDICTION]]
+def anchor_date(approved: pd.Series, tail_ratio: float, window_days: int) -> pd.Timestamp:
+    """Last approval day (UTC midnight) whose order count ≥ `tail_ratio` × the mean count over the
+    `window_days` calendar days ending on it (empty days count as 0), skipping a straggler tail."""
+    counts = pd.to_datetime(approved, utc=True).dropna().dt.normalize().value_counts()
+    counts = counts.sort_index().asfreq("D", fill_value=0)
+    trailing = counts.rolling(window_days, min_periods=1).mean()
+    return pd.Timestamp(counts.index[counts >= tail_ratio * trailing][-1])
 
 
 def _with_seller(store: FeatureStore, df: pd.DataFrame) -> pd.DataFrame:
@@ -95,21 +100,22 @@ def monitor_late_delivery(
     Rows are written and the breach decided before the (best-effort) report upload."""
     run_ts = pd.Timestamp.now(tz="UTC")
     out = config.gold_dir() / "ml" / "ml_monitoring.parquet"
-    scored = _read_scored(config.gold_dir() / "ml" / "pred_late_delivery.parquet")
-    if not scored.empty:
-        scored = scored.merge(pd.read_parquet(cfg.training_path), on="order_id", how="inner")
-    if scored.empty:
-        logger.warning("empty current window: no scored orders to monitor; exit 0")
+    orders = pd.read_parquet(cfg.training_path)
+    approved = pd.to_datetime(orders["order_approved_ts_utc"], utc=True)
+    if approved.isna().all():
+        logger.warning("empty current window: no approved orders to monitor; exit 0")
         return 0
 
-    approved = pd.to_datetime(scored["order_approved_ts_utc"], utc=True)
-    now = approved.max()
-    window = f"{(now - WINDOW).date()}/{now.date()}"
-    current = _with_seller(store, scored[approved > now - WINDOW])
+    window_days = int(_env("MONITOR_WINDOW_DAYS", 28))
+    now = anchor_date(approved, _env("MONITOR_TAIL_RATIO", 0.2), window_days)
+    start = now - pd.Timedelta(days=window_days - 1)
+    window = f"{start.date()}/{now.date()}"
+    current = _with_seller(store, orders[approved.dt.normalize().between(start, now)])
 
     version, champion_pr_auc = _champion(client, cfg.registered_model)
     floor = champion_pr_auc - PR_AUC_MARGIN
     model = mlflow.pyfunc.load_model(f"models:/{cfg.registered_model}/{version}")
+    current[PREDICTION] = np.asarray(model.predict(model_inputs(current)), dtype=float)
     train = split(read_training(cfg.training_path), cfg)["train"]
     n_reference = int(_env("REFERENCE_SAMPLE_ROWS", 10_000))
     if len(train) > n_reference:
@@ -118,7 +124,7 @@ def monitor_late_delivery(
     reference[PREDICTION] = np.asarray(model.predict(model_inputs(reference)), dtype=float)
     drift, html = drift_report(reference, current)
 
-    weekly = weekly_performance(scored[scored["is_late"].notna()])
+    weekly = weekly_performance(current[current["is_late"].notna()])
     rows: list[dict[str, object]] = [
         *({"metric": k, "value": v, "window": window} for k, v in drift.items()),
         {"metric": "n_current", "value": float(len(current)), "window": window},
