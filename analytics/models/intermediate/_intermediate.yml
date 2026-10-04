@@ -1,0 +1,184 @@
+models:
+  - name: int_order_lifecycle
+    description: >
+      One row per order with lifecycle durations in hours (UTC timestamps), delivery flags,
+      revenue flag, and item and payment totals aggregated separately so items x payments never
+      multiply.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+
+  - name: int_sessions
+    description: >
+      One row per clickstream session: start/end, event counts by type, checkout flag, and the
+      customer and order seen in the session (null for anonymous sessions).
+    columns:
+      - name: session_id
+        data_tests: [not_null, unique]
+
+  - name: int_customer_orders
+    description: One row per order with its sequence number per customer_unique_id.
+    columns:
+      - name: order_id
+        data_tests: [not_null, unique]
+      - name: customer_unique_id
+        data_tests: [not_null]
+
+unit_tests:
+  - name: int_order_lifecycle_items_and_payments_not_double_counted
+    description: 2 items x 2 payments on one order; canceled/unavailable orders are not revenue.
+    model: int_order_lifecycle
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: o1, order_status: delivered}
+          - {order_id: o2, order_status: canceled}
+          - {order_id: o3, order_status: unavailable}
+      - input: ref('stg_order_items')
+        rows:
+          - {order_id: o1, order_item_id: 1, price: 10.00, freight_value: 2.00}
+          - {order_id: o1, order_item_id: 2, price: 20.00, freight_value: 3.00}
+          - {order_id: o2, order_item_id: 1, price: 50.00, freight_value: 5.00}
+      - input: ref('stg_order_payments')
+        rows:
+          - {order_id: o1, payment_sequential: 1, payment_value: 20.00}
+          - {order_id: o1, payment_sequential: 2, payment_value: 15.00}
+          - {order_id: o2, payment_sequential: 1, payment_value: 55.00}
+    expect:
+      rows:
+        - {order_id: o1, item_count: 2, item_revenue: 35.00, payment_value: 35.00, is_revenue_order: true}
+        - {order_id: o2, item_count: 1, item_revenue: 55.00, payment_value: 55.00, is_revenue_order: false}
+        - {order_id: o3, item_count: 0, item_revenue: 0.00, payment_value: 0.00, is_revenue_order: false}
+
+  - name: int_order_lifecycle_durations_and_lateness
+    model: int_order_lifecycle
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - order_id: late
+            order_status: delivered
+            order_purchase_ts_utc: "2017-01-01 10:00:00+00"
+            order_approved_ts_utc: "2017-01-01 12:00:00+00"
+            order_delivered_carrier_ts_utc: "2017-01-02 12:00:00+00"
+            order_delivered_customer_ts_utc: "2017-01-05 12:00:00+00"
+            order_estimated_delivery_ts_utc: "2017-01-04 00:00:00+00"
+          - order_id: on_time
+            order_status: delivered
+            order_purchase_ts_utc: "2017-01-01 10:00:00+00"
+            order_approved_ts_utc: "2017-01-01 10:30:00+00"
+            order_delivered_carrier_ts_utc: "2017-01-02 10:30:00+00"
+            order_delivered_customer_ts_utc: "2017-01-03 10:00:00+00"
+            order_estimated_delivery_ts_utc: "2017-01-10 00:00:00+00"
+          - order_id: shipped
+            order_status: shipped
+            order_purchase_ts_utc: "2017-01-01 10:00:00+00"
+            order_approved_ts_utc: "2017-01-01 11:00:00+00"
+            order_delivered_carrier_ts_utc: "2017-01-02 10:00:00+00"
+            order_estimated_delivery_ts_utc: "2017-01-02 00:00:00+00"
+      - input: ref('stg_order_items')
+        rows: []
+      - input: ref('stg_order_payments')
+        rows: []
+    expect:
+      rows:
+        - order_id: late
+          purchase_to_approved_hours: 2.0
+          approved_to_carrier_hours: 24.0
+          carrier_to_customer_hours: 72.0
+          purchase_to_customer_hours: 98.0
+          is_delivered: true
+          is_late: true
+        - order_id: on_time
+          purchase_to_approved_hours: 0.5
+          approved_to_carrier_hours: 24.0
+          carrier_to_customer_hours: 23.5
+          purchase_to_customer_hours: 48.0
+          is_delivered: true
+          is_late: false
+        - order_id: shipped
+          purchase_to_approved_hours: 1.0
+          approved_to_carrier_hours: 23.0
+          carrier_to_customer_hours: null
+          purchase_to_customer_hours: null
+          is_delivered: false
+          is_late: false
+
+  - name: int_sessions_counts_and_anonymous_sessions
+    description: Sessions lacking some event types or any customer are kept with zero counts.
+    model: int_sessions
+    given:
+      - input: ref('stg_clickstream')
+        rows:
+          - {event_id: e1, session_id: s1, event_type: page_view, customer_id: c1, event_ts_utc: "2017-01-01 10:00:00+00", event_date: "2017-01-01"}
+          - {event_id: e2, session_id: s1, event_type: product_view, customer_id: c1, event_ts_utc: "2017-01-01 10:01:00+00", event_date: "2017-01-01"}
+          - {event_id: e3, session_id: s1, event_type: product_view, customer_id: c1, event_ts_utc: "2017-01-01 10:02:00+00", event_date: "2017-01-01"}
+          - {event_id: e4, session_id: s1, event_type: add_to_cart, customer_id: c1, event_ts_utc: "2017-01-01 10:03:00+00", event_date: "2017-01-01", quantity: 1}
+          - {event_id: e5, session_id: s1, event_type: checkout_started, customer_id: c1, order_id: o1, event_ts_utc: "2017-01-01 10:04:00+00", event_date: "2017-01-01"}
+          - {event_id: e6, session_id: s2, event_type: page_view, event_ts_utc: "2017-01-02 09:00:00+00", event_date: "2017-01-02"}
+          - {event_id: e7, session_id: s2, event_type: search, event_ts_utc: "2017-01-02 09:01:00+00", event_date: "2017-01-02"}
+          - {event_id: e8, session_id: s2, event_type: product_view, event_ts_utc: "2017-01-02 09:02:00+00", event_date: "2017-01-02"}
+          - {event_id: e9, session_id: s3, event_type: page_view, event_ts_utc: "2017-01-03 08:00:00+00", event_date: "2017-01-03"}
+    expect:
+      rows:
+        - session_id: s1
+          session_date: "2017-01-01"
+          session_start_ts_utc: "2017-01-01 10:00:00+00"
+          session_end_ts_utc: "2017-01-01 10:04:00+00"
+          event_count: 5
+          page_view_count: 1
+          search_count: 0
+          product_view_count: 2
+          add_to_cart_count: 1
+          checkout_started_count: 1
+          has_checkout: true
+          customer_id: c1
+          order_id: o1
+        - session_id: s2
+          session_date: "2017-01-02"
+          session_start_ts_utc: "2017-01-02 09:00:00+00"
+          session_end_ts_utc: "2017-01-02 09:02:00+00"
+          event_count: 3
+          page_view_count: 1
+          search_count: 1
+          product_view_count: 1
+          add_to_cart_count: 0
+          checkout_started_count: 0
+          has_checkout: false
+          customer_id: null
+          order_id: null
+        - session_id: s3
+          session_date: "2017-01-03"
+          session_start_ts_utc: "2017-01-03 08:00:00+00"
+          session_end_ts_utc: "2017-01-03 08:00:00+00"
+          event_count: 1
+          page_view_count: 1
+          search_count: 0
+          product_view_count: 0
+          add_to_cart_count: 0
+          checkout_started_count: 0
+          has_checkout: false
+          customer_id: null
+          order_id: null
+
+  - name: int_customer_orders_sequence_per_unique_customer
+    description: >
+      Olist issues a new customer_id per order; sequence is per customer_unique_id and only the
+      current customer version is used, so SCD2 history does not duplicate orders.
+    model: int_customer_orders
+    given:
+      - input: ref('stg_orders')
+        rows:
+          - {order_id: o1, customer_id: c1, order_purchase_ts_utc: "2017-01-01 10:00:00+00"}
+          - {order_id: o2, customer_id: c2, order_purchase_ts_utc: "2017-03-01 10:00:00+00"}
+          - {order_id: o3, customer_id: c3, order_purchase_ts_utc: "2017-02-01 10:00:00+00"}
+      - input: ref('stg_customers')
+        rows:
+          - {customer_id: c1, customer_unique_id: u1, is_current: false}
+          - {customer_id: c1, customer_unique_id: u1, is_current: true}
+          - {customer_id: c2, customer_unique_id: u1, is_current: true}
+          - {customer_id: c3, customer_unique_id: u2, is_current: true}
+    expect:
+      rows:
+        - {order_id: o1, customer_unique_id: u1, customer_order_seq: 1, is_first_order: true}
+        - {order_id: o2, customer_unique_id: u1, customer_order_seq: 2, is_first_order: false}
+        - {order_id: o3, customer_unique_id: u2, customer_order_seq: 1, is_first_order: true}
