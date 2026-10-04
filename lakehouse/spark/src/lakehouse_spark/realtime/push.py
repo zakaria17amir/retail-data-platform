@@ -5,7 +5,7 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -19,12 +19,20 @@ SKIPPED_BATCHES: Counter[str] = Counter()
 log = logging.getLogger("realtime.push")
 
 
-def _value(v: Any) -> Any:
-    return v.isoformat() if isinstance(v, datetime) else v
+TIMESTAMP_FIELD = "event_ts"
+
+
+def _value(column: str, v: Any) -> Any:
+    if not isinstance(v, datetime):
+        return v
+    # Feast parses the event timestamp with pd.to_datetime but int()-casts UnixTimestamp features
+    if column == TIMESTAMP_FIELD:
+        return v.isoformat()
+    return int(v.replace(tzinfo=v.tzinfo or timezone.utc).timestamp())  # noqa: UP017 (spark: py3.10)
 
 
 def _payload(source: str, rows: Sequence[Mapping[str, Any]]) -> bytes:
-    columns = {c: [_value(r[c]) for r in rows] for c in rows[0]}
+    columns = {c: [_value(c, r[c]) for r in rows] for c in rows[0]}
     return json.dumps({"push_source_name": source, "df": columns, "to": "online"}).encode()
 
 

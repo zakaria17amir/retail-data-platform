@@ -61,6 +61,21 @@ def test_push_posts_column_payload_in_chunks_of_500(feast: tuple[FakeFeast, str]
     assert first["df"]["event_ts"][1] == "2017-06-01T12:00:01"
 
 
+def test_push_sends_unix_timestamp_features_as_epoch_seconds(
+    feast: tuple[FakeFeast, str],
+) -> None:
+    fake, url = feast
+    row = {
+        "session_id": "s1",
+        "session_start_ts": datetime(2017, 6, 1, 12, 0, 0),
+        "event_ts": datetime(2017, 6, 1, 12, 5, 0),
+    }
+    assert push_rows(url, "session_push", [row]) is True
+    df = fake.requests[0][1]["df"]
+    assert df["session_start_ts"] == [1496318400]
+    assert df["event_ts"] == ["2017-06-01T12:05:00"]
+
+
 def test_push_skips_nothing_on_empty_batch(feast: tuple[FakeFeast, str]) -> None:
     fake, url = feast
     assert push_rows(url, "popularity_push", []) is True
