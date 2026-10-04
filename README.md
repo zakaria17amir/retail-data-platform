@@ -123,6 +123,23 @@ to call `/recommend` after the session's events are online (backlog). Grafana da
 "Retail realtime ML", Redis persistence, e2e test and limits:
 [docs/runbooks/realtime.md](docs/runbooks/realtime.md).
 
+### GenAI and agents (enrichment, RAG, analytics + shopping agents)
+
+```sh
+ollama pull qwen2.5:7b-instruct && ollama pull bge-m3   # host Ollama (GPU); then set LITELLM_MASTER_KEY=sk-... in .env
+make up PROFILE=genai                 # LiteLLM gateway :4000 (Ollama by default), Chainlit UI http://127.0.0.1:8010
+make enrich                           # 500 products (ENRICH_LIMIT) -> silver/product_enriched
+make rag ARGS=init && make rag ARGS=index && make rag ARGS=eval   # pgvector hybrid index, Recall@10 / MRR
+set -a; . ./.env; set +a                                          # plain `uv run` does not read .env
+uv run --project agents agents shop init                          # shop.stock + insert-only shop_writer role
+uv run --project agents agents analytics "What was revenue by year?"
+make agents-eval ARGS="analytics --limit 10"                      # golden sets -> MLflow genai-evals
+```
+
+The Postgres image moves to pgvector on the existing volume; do the checked swap once first. No live
+model numbers exist yet: the model downloads are pending. Downloads, the swap, hosted mode and limits:
+[docs/runbooks/genai.md](docs/runbooks/genai.md).
+
 ## Status
 
 | # | Phase | Status |
@@ -133,7 +150,7 @@ to call `/recommend` after the session's events are online (backlog). Grafana da
 | 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
 | 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
 | 5 | Real-time ML | In progress: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
-| 6 | GenAI & agents | Planned |
+| 6 | GenAI & agents | In progress: code + tests done (LiteLLM → Ollama, LLM catalogue enrichment, pgvector hybrid RAG, LangGraph analytics agent over MetricFlow + guarded SQL, shopping agent with human-approved orders, golden-set evals, Chainlit); live runs pending model download ([ADR-0008](docs/adr/0008-genai-agents.md)) |
 | 7 | Cloud | Planned |
 | 8 | Polish | Planned |
 
