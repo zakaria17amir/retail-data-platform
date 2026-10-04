@@ -480,9 +480,12 @@ services:
     image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
     # candidates + Feast online rows; noeviction: a full store fails writes loudly instead of
     # silently dropping candidate lists
-    command: ["redis-server", "--maxmemory", "640mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--maxmemory", "640mb", "--maxmemory-policy", "noeviction",
+              "--appendonly", "yes"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -795,6 +798,7 @@ volumes:
   pgdata:
   miniodata:
   redpandadata:
+  redisdata:
 
 networks:
   retail:
