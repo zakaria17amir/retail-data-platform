@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 import urllib.error
+import urllib.parse
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -96,32 +97,48 @@ def test_gold_is_due() -> None:
     assert common.gold_is_due(now - timedelta(minutes=1), now, 0)
 
 
-def test_last_success_end_queries_rest_api(monkeypatch: pytest.MonkeyPatch) -> None:
+BUILT = {"run": "built", "end": "2026-10-04T04:02:31Z", "publish_gold": "success"}
+# a short-circuited run: every leaf skipped, so the run itself ends in state success
+SHORT_CIRCUITED = {"run": "skipped", "end": "2026-10-04T05:00:00Z", "publish_gold": "skipped"}
+
+
+def fake_api(monkeypatch: pytest.MonkeyPatch, runs: list[dict[str, str]]) -> list[Any]:
     sent: list[Any] = []
-    replies = [
-        {"access_token": "tok"},
-        {"dag_runs": [{"end_date": "2026-10-04T04:02:31.782625Z"}], "total_entries": 1},
-        {"dag_runs": [], "total_entries": 0},
-    ]
 
     def urlopen(req: Any, timeout: float) -> Any:
         sent.append(req)
-        return contextlib.nullcontext(io.BytesIO(json.dumps(replies.pop(0)).encode()))
+        url = urllib.parse.urlsplit(req.full_url)
+        q = dict(urllib.parse.parse_qsl(url.query))
+        if url.path == "/auth/token":
+            body: Any = {"access_token": "tok"}
+        elif url.path == "/api/v2/dags/gold_daily/dagRuns/~/taskInstances":
+            assert q["order_by"] == "-end_date"
+            rows = sorted(runs, key=lambda r: r["end"], reverse=True)
+            rows = [r for r in rows if r[q["task_id"]] == q["state"]][: int(q["limit"])]
+            body = {
+                "task_instances": [{"dag_run_id": r["run"], "end_date": r["end"]} for r in rows]
+            }
+        else:
+            raise AssertionError(req.full_url)
+        return contextlib.nullcontext(io.BytesIO(json.dumps(body).encode()))
 
     monkeypatch.setenv("AIRFLOW_ADMIN_PASSWORD", "pw")
     monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
-    end = common.last_success_end("gold_daily")
-    assert end == datetime(2026, 10, 4, 4, 2, 31, 782625, tzinfo=UTC)
-    login, runs = sent
+    return sent
+
+
+def test_last_build_end_ignores_short_circuited_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent = fake_api(monkeypatch, [BUILT, SHORT_CIRCUITED])
+    assert common.last_build_end() == datetime(2026, 10, 4, 4, 2, 31, tzinfo=UTC)
+    login, tis = sent
     assert login.full_url == "http://localhost:8080/auth/token"
     assert json.loads(login.data) == {"username": "admin", "password": "pw"}
-    assert runs.full_url == (
-        "http://localhost:8080/api/v2/dags/gold_daily/dagRuns"
-        "?state=success&order_by=-end_date&limit=1"
-    )
-    assert runs.get_header("Authorization") == "Bearer tok"
-    replies.insert(0, {"access_token": "tok"})
-    assert common.last_success_end("gold_daily") is None
+    assert tis.get_header("Authorization") == "Bearer tok"
+
+
+def test_last_build_end_none_when_gold_never_published(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_api(monkeypatch, [SHORT_CIRCUITED])
+    assert common.last_build_end() is None
 
 
 REFERENCE_SOURCES = ("categories", "products", "sellers", "geolocation_points")

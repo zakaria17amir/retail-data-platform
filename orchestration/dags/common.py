@@ -41,9 +41,10 @@ def gold_is_due(last_end: datetime | None, now: datetime, min_hours: float) -> b
     return min_hours <= 0 or last_end is None or now - last_end >= timedelta(hours=min_hours)
 
 
-def last_success_end(dag_id: str, api: str = "http://localhost:8080") -> datetime | None:
+def last_build_end(api: str = "http://localhost:8080") -> datetime | None:
     # asset-triggered runs have no logical_date, so the Task SDK's get_previous_dagrun and
-    # prev_end_date_success are always None; ask the REST API (served in this container) instead
+    # prev_end_date_success are always None; ask the REST API (served in this container) instead.
+    # A short-circuited run also ends in success, so look for the last publish_gold that succeeded.
     login = urllib.request.Request(
         f"{api}/auth/token",
         data=json.dumps(
@@ -53,12 +54,13 @@ def last_success_end(dag_id: str, api: str = "http://localhost:8080") -> datetim
     )
     with urllib.request.urlopen(login, timeout=10) as resp:
         token = json.load(resp)["access_token"]
-    runs = urllib.request.Request(
-        f"{api}/api/v2/dags/{dag_id}/dagRuns?state=success&order_by=-end_date&limit=1",
+    tis = urllib.request.Request(
+        f"{api}/api/v2/dags/gold_daily/dagRuns/~/taskInstances"
+        "?task_id=publish_gold&state=success&order_by=-end_date&limit=1",
         headers={"Authorization": f"Bearer {token}"},
     )
-    with urllib.request.urlopen(runs, timeout=10) as resp:
-        found = json.load(resp)["dag_runs"]
+    with urllib.request.urlopen(tis, timeout=10) as resp:
+        found = json.load(resp)["task_instances"]
     return datetime.fromisoformat(found[0]["end_date"]) if found else None
 
 
