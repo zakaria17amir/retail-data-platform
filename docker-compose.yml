@@ -13,7 +13,7 @@ x-monitor-env: &monitor-env
 
 services:
   postgres:
-    profiles: [core, ingest, demo, analytics, ml]
+    profiles: [core, ingest, demo, analytics, ml, realtime]
     image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
     command:
       - postgres
@@ -43,7 +43,7 @@ services:
     networks: [retail]
 
   minio:
-    profiles: [core, ingest, analytics, ml]
+    profiles: [core, ingest, analytics, ml, realtime]
     # Silo (pgsty), maintained MinIO fork; minio/minio was removed from Docker Hub, see ADR-0002
     image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     command: server /data --console-address ":9001"
@@ -67,7 +67,7 @@ services:
     networks: [retail]
 
   minio-init:
-    profiles: [core, ingest, analytics, ml]
+    profiles: [core, ingest, analytics, ml, realtime]
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
     depends_on:
       minio:
@@ -88,7 +88,7 @@ services:
     networks: [retail]
 
   redpanda:
-    profiles: [ingest, demo]
+    profiles: [ingest, demo, realtime]
     image: redpandadata/redpanda:v26.2.3@sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9
     command:
       - redpanda
@@ -269,6 +269,9 @@ services:
       SIM_SCHEMA_EVOLVE_AFTER: ${SIM_SCHEMA_EVOLVE_AFTER:-0}
       SIM_BROWSING_RATIO: ${SIM_BROWSING_RATIO:-3}
       SIM_SEED: ${SIM_SEED:-42}
+      # used only by `run --feedback`; a failed call skips feedback
+      RECOMMEND_URL: http://serving:8000
+      CLICK_BASE: ${CLICK_BASE:-0.3}
     depends_on:
       redpanda:
         condition: service_healthy
@@ -391,7 +394,7 @@ services:
     networks: [retail]
 
   mlflow-init:
-    profiles: [ml]
+    profiles: [ml, realtime]
     build:
       context: ml
       dockerfile: mlflow.Dockerfile
@@ -422,7 +425,7 @@ services:
     networks: [retail]
 
   mlflow:
-    profiles: [ml]
+    profiles: [ml, realtime]
     build:
       context: ml
       dockerfile: mlflow.Dockerfile
@@ -473,10 +476,16 @@ services:
     networks: [retail]
 
   redis:
-    profiles: [ml]
+    profiles: [ml, realtime]
     image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
+    # candidates + Feast online rows; noeviction: a full store fails writes loudly instead of
+    # silently dropping candidate lists
+    command: ["redis-server", "--maxmemory", "640mb", "--maxmemory-policy", "noeviction",
+              "--appendonly", "yes"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -486,11 +495,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 768m
     networks: [retail]
 
   serving:
-    profiles: [ml]
+    profiles: [ml, realtime]
     build: &ml-build
       context: ml
       args:
@@ -573,7 +582,150 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2g
+          memory: 3g  # train recommender peaks at 1.98 GiB on the full history
+    networks: [retail]
+
+  # topic and DDL need different clients (rpk, psql), so two one-shot inits
+  realtime-init:
+    profiles: [realtime]
+    image: redpandadata/redpanda:v26.2.3@sha256:9e83cfa99278f30d0133271c26bf670cd69c94ffa6ba0b42830dd0c3bd9dcfd9
+    entrypoint: ["rpk", "topic", "create", "ml.late_delivery_scores", "--if-not-exists", "-X", "brokers=redpanda:9092"]
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks: [retail]
+
+  realtime-sql-init:
+    profiles: [realtime]
+    image: postgres:16.6@sha256:557fea37a744d5f4c8faab304b0a90858b53ab119735a88c131fd19dab802f36
+    command: ["psql", "-v", "ON_ERROR_STOP=1", "-f", "/sql/realtime.sql"]
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    volumes:
+      - ./sql:/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks: [retail]
+
+  feast-server:
+    profiles: [realtime]
+    build: *ml-build
+    image: retail-ml
+    entrypoint: ["feast"]
+    # 2 workers and no gunicorn recycling (--max-requests 0): pushes never hit a restarting worker
+    command: ["-c", "/feature_repo", "serve", "-h", "0.0.0.0", "-p", "6566", "-w", "2", "--max-requests", "0"]
+    environment:
+      <<: *ml-env
+      # `feast serve` substitutes REDIS_URL raw into feature_store.yaml: Feast connection format
+      REDIS_URL: "redis:6379,db=0"
+    ports:
+      - "127.0.0.1:${FEAST_PORT:-6566}:6566"
+    volumes:
+      - ./data/feast:/data/feast
+      - ./ml/feature_repo:/feature_repo
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6566/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks: [retail]
+
+  stream-score:
+    profiles: [realtime]
+    build: *ml-build
+    image: retail-ml
+    command: ["stream-score"]
+    environment:
+      <<: *ml-env
+      KAFKA_BOOTSTRAP: redpanda:9092
+      SCHEMA_REGISTRY_URL: http://redpanda:8081
+      POSTGRES_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      STREAM_BATCH_ROWS: ${STREAM_BATCH_ROWS:-500}
+      STREAM_BATCH_SECONDS: ${STREAM_BATCH_SECONDS:-5}
+    ports:
+      - "127.0.0.1:${STREAM_SCORE_PORT:-8001}:8001"
+    volumes:
+      - ./data:/data
+      - ./ml/feature_repo:/feature_repo
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      realtime-init:
+        condition: service_completed_successfully
+      realtime-sql-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/metrics')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks: [retail]
+
+  spark-realtime:
+    profiles: [realtime]
+    build: lakehouse/spark
+    image: retail-spark
+    command: ["spark-submit", "/opt/lakehouse/src/lakehouse_spark/realtime/app.py"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      FEAST_SERVER_URL: http://feast-server:6566
+      SESSION_WATERMARK: ${SESSION_WATERMARK:-48 hours}
+      POPULARITY_WATERMARK: ${POPULARITY_WATERMARK:-49 hours}
+    volumes:
+      - ./lakehouse/spark:/opt/lakehouse:ro
+    depends_on:
+      minio:
+        condition: service_healthy
+      feast-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:4040/api/v1/applications"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 3g  # driver 2g + 512m overhead from spark-defaults.conf
     networks: [retail]
 
   prometheus:
@@ -649,6 +801,7 @@ volumes:
   pgdata:
   miniodata:
   redpandadata:
+  redisdata:
 
 networks:
   retail:

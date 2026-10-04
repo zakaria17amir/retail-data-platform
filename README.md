@@ -29,7 +29,7 @@ real-time ML with MLOps, and GenAI agents, with an AWS + Snowflake cloud path.
                    Feast online (Redis) ◄── stream features ──┐       ▼
                            │                      │           │  Shopping agent ──► place_order → Postgres
                            ▼                      ▼           │                                  (full circle)
-                    FastAPI serving  ◄── Spark stream scoring ─┘
+                    FastAPI serving  ◄── Python stream scorer ─┘
                    (/predict, /recommend)        │
                            ▼                     ▼
                 Prometheus/Grafana        Evidently drift → retrain DAG
@@ -104,6 +104,25 @@ After a new champion, `docker compose --profile ml restart serving` (`/reload` r
 workers). DAGs, promotion and troubleshooting: [docs/runbooks/ml.md](docs/runbooks/ml.md); EDA,
 iteration log and model cards: [ds/](ds/).
 
+### Real-time ML (stream scoring, session recommendations)
+
+```sh
+make up PROFILE=ingest && make up PROFILE=realtime   # CDC/bronze + feast-server, stream-score, spark-realtime
+uv run --package clickstream-sim clickstream-sim generate   # simulated session history from gold
+make ml ARGS="train recommender" && make ml ARGS="publish-candidates"
+docker compose --profile realtime restart serving
+make sim SIM_ARGS="--feedback"        # live sessions -> Feast; /recommend feedback -> CTR in gold (cold start only)
+curl -s -X POST http://127.0.0.1:8000/recommend -H 'content-type: application/json' -d '{"session_id": "<id>", "k": 10}'
+```
+
+Approvals replayed through CDC land in `ml.order_risk` (0.52 s and 1.28 s end to end in two e2e runs);
+`/recommend` measures p50 42 / p95 140 ms at 20 users (50 ms target missed). Live feedback currently
+measures only the cold-start strategy (`global_popularity`): the sim calls `/recommend` before the
+session's events reach Kafka, so the session is unknown. Rerank CTR per model version needs the sim
+to call `/recommend` after the session's events are online (backlog). Grafana dashboard
+"Retail realtime ML", Redis persistence, e2e test and limits:
+[docs/runbooks/realtime.md](docs/runbooks/realtime.md).
+
 ## Status
 
 | # | Phase | Status |
@@ -113,7 +132,7 @@ iteration log and model cards: [ds/](ds/).
 | 2 | Lakehouse | In progress: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
 | 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
 | 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
-| 5 | Real-time ML | Planned |
+| 5 | Real-time ML | In progress: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
 | 6 | GenAI & agents | Planned |
 | 7 | Cloud | Planned |
 | 8 | Polish | Planned |

@@ -105,6 +105,28 @@ def test_v2_message_carries_utm_campaign() -> None:
     assert _decode(kafka.messages[0]["value"], 2) == event.to_dict(2)
 
 
+def test_feedback_v3_registers_lazily_and_decodes_with_rank() -> None:
+    producer, kafka = _producer("v3")
+    event = _event(
+        event_type="recommendation_shown", rank=2, rec_model_version="3", rec_strategy="rerank"
+    )
+    producer.produce(_emission(event, version=3))
+    assert producer.registry.get_versions("events.recommendation_shown-value") == [1]
+    assert _decode(kafka.messages[0]["value"], 3) == event.to_dict(3)
+    assert kafka.messages[0]["topic"] == "events.recommendation_shown"
+
+
+def test_feedback_event_gets_the_trigger_kafka_timestamp() -> None:
+    producer, kafka = _producer("feedback-ts")
+    fallback = datetime(2017, 10, 2, 11)
+    trigger = _event(event_type="product_view", event_ts="2017-10-02T10:41:07")
+    feedback = _event(event_type="recommendation_clicked", event_ts=trigger.event_ts, rank=1)
+    producer.produce(_emission(trigger), fallback)
+    producer.produce(_emission(feedback, version=3), fallback)
+    assert kafka.messages[0]["timestamp"] == kafka.messages[1]["timestamp"]
+    assert kafka.messages[1]["timestamp"] == _ms(2017, 10, 2, 10, 41, 7)
+
+
 def test_kafka_timestamp_is_event_ts_in_utc_ms() -> None:
     producer, kafka = _producer("ts")
     producer.produce(_emission(_event(event_ts="2017-10-02T10:00:00")))

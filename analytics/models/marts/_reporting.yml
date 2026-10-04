@@ -144,7 +144,60 @@ models:
                 min_value: 0
                 max_value: 100
 
+  - name: rpt_recommendation_ctr
+    description: >
+      Grain event date (local) x model_version x strategy over fct_recommendations: shown,
+      clicked, ctr = clicked / shown (metric recommendation_ctr) and ctr_at_k = clicked / shown
+      among items at rank <= k, for k = 1, 2, 3.
+    config:
+      cluster_by: [event_date]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [event_date, model_version, strategy]
+    columns:
+      - name: event_date
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: date_day
+      - name: ctr
+        data_tests: *unit_interval
+      - name: ctr_at_1
+        data_tests: *unit_interval
+      - name: ctr_at_2
+        data_tests: *unit_interval
+      - name: ctr_at_3
+        data_tests: *unit_interval
+
 unit_tests:
+  - name: rpt_recommendation_ctr_per_model_and_rank
+    description: >
+      ctr = clicked / shown per date, model_version and strategy (null model_version is its own
+      group); ctr_at_k counts only ranks <= k and is null without such impressions.
+    model: rpt_recommendation_ctr
+    given:
+      - input: ref('fct_recommendations')
+        rows:
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 1, is_clicked: true}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 1, is_clicked: false}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 2, is_clicked: false}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 2, is_clicked: false}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 3, is_clicked: true}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 4, is_clicked: true}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 4, is_clicked: false}
+          - {event_date: "2017-01-01", model_version: "3", strategy: rerank, rank: 4, is_clicked: false}
+          - {event_date: "2017-01-01", model_version: null, strategy: global_popularity, rank: 5, is_clicked: false}
+          - {event_date: "2017-01-02", model_version: "3", strategy: rerank, rank: 1, is_clicked: false}
+    expect:
+      rows:
+        - {event_date: "2017-01-01", model_version: "3", strategy: rerank, shown: 8, clicked: 3, ctr: 0.375, ctr_at_1: 0.5, ctr_at_2: 0.25, ctr_at_3: 0.4}
+        - {event_date: "2017-01-01", model_version: null, strategy: global_popularity, shown: 1, clicked: 0, ctr: 0.0, ctr_at_1: null, ctr_at_2: null, ctr_at_3: null}
+        - {event_date: "2017-01-02", model_version: "3", strategy: rerank, shown: 1, clicked: 0, ctr: 0.0, ctr_at_1: 0.0, ctr_at_2: 0.0, ctr_at_3: 0.0}
+
+
   - name: rpt_data_quality_rule_metrics_summed_per_run
     description: >
       The silver job writes one _rule_metrics row per micro-batch; two batches of one

@@ -1,12 +1,15 @@
 import json
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
+from clickstream_sim import cli
 from clickstream_sim.cli import SimConfig, report, run
 from clickstream_sim.events import Catalogue, OrderRef
 from clickstream_sim.faults import Emission
+from clickstream_sim.feedback import Recommendations
 
 CATALOGUE = Catalogue.from_rows([("p1", "toys"), ("p2", "toys"), ("p3", "books"), ("p4", None)])
 
@@ -199,6 +202,76 @@ def test_same_seed_runs_over_different_orders_have_disjoint_event_ids() -> None:
     assert _event_ids(orders) == first
 
 
+RECS = Recommendations((("p2", "toys"), ("p3", "books")), "3", "rerank")
+
+
+def _run_feedback(
+    recommend: Callable[[str], Recommendations | None], **overrides: Any
+) -> tuple[dict[str, int], FakeProducer, list[str]]:
+    clock = [0.0]
+    producer = FakeProducer(clock)
+    asked: list[str] = []
+
+    def tracked(session_id: str) -> Recommendations | None:
+        asked.append(session_id)
+        return recommend(session_id)
+
+    summary = run(
+        _cfg(**overrides),
+        max_events=40,
+        summary_file=None,
+        sleep=lambda s: clock.__setitem__(0, clock[0] + s),
+        now=lambda: clock[0],
+        feed=FakeFeed(_orders(6), clock),
+        producer=producer,
+        catalogue=CATALOGUE,
+        recommend=tracked,
+    )
+    return summary, producer, asked
+
+
+def _base(producer: FakeProducer) -> list[Emission]:
+    return [e for _, e, _ in producer.sent if not e.event.event_type.startswith("recommendation")]
+
+
+def test_feedback_follows_each_product_view_with_its_dataset_time() -> None:
+    summary, producer, asked = _run_feedback(lambda _: RECS, bad_rate=0.0, dup_rate=0.0)
+    views = [e for e in _base(producer) if e.event.event_type == "product_view"]
+    assert len(asked) == len(views) > 0
+    feedback = [
+        (t, e, f) for t, e, f in producer.sent if e.event.event_type.startswith("recommendation")
+    ]
+    shown = [e for _, e, _ in feedback if e.event.event_type == "recommendation_shown"]
+    assert len(shown) == 2 * len(views)
+    assert summary["feedback"] == len(feedback)
+    assert summary["recommend_failures"] == 0
+    assert {e.schema_version for _, e, _ in feedback} == {3}
+    trigger_of = {(v.event.session_id, v.event.event_ts): v for v in views}
+    sent_at = {id(e): (t, f) for t, e, f in producer.sent}
+    for t, emission, fallback in feedback:
+        trigger = trigger_of[(emission.event.session_id, emission.event.event_ts)]
+        assert emission.delay_s == trigger.delay_s
+        assert (t, fallback) == sent_at[id(trigger)]
+
+
+def test_recommend_failure_skips_feedback_and_the_sim_continues() -> None:
+    plain, plain_producer = _run(_cfg(), max_events=40)
+    summary, producer, asked = _run_feedback(lambda _: None)
+    assert asked
+    assert [e for e in producer.sent if not e[1].event.event_type.startswith("rec")] == (
+        plain_producer.sent
+    )
+    assert summary["feedback"] == 0
+    assert summary["recommend_failures"] == len(asked)
+    assert summary["events_unique"] == plain["events_unique"] == 40
+
+
+def test_feedback_off_by_default_asks_nothing() -> None:
+    summary, producer = _run(_cfg(), max_events=40)
+    assert (summary["feedback"], summary["recommend_failures"]) == (0, 0)
+    assert all(not e.event.event_type.startswith("rec") for _, e, _ in producer.sent)
+
+
 def test_config_from_env_defaults_and_overrides() -> None:
     env = {
         "KAFKA_BOOTSTRAP": "redpanda:9092",
@@ -218,3 +291,21 @@ def test_config_from_env_defaults_and_overrides() -> None:
     )
     assert cfg.speed == 600.0
     assert cfg.bootstrap == "redpanda:9092"
+    assert cfg.recommend_url == "http://127.0.0.1:8000"
+    assert SimConfig.from_env({"RECOMMEND_URL": "http://serving:8000"}).recommend_url == (
+        "http://serving:8000"
+    )
+
+
+def test_run_feedback_flag_wires_a_recommend_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[object] = []
+
+    def fake_run(cfg: SimConfig, **kwargs: Any) -> dict[str, int]:
+        seen.append(kwargs.get("recommend"))
+        return {"delivery_errors": 0, "unflushed": 0}
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    assert cli.main(["run", "--max-events", "1"]) == 0
+    assert cli.main(["run", "--max-events", "1", "--feedback"]) == 0
+    assert seen[0] is None
+    assert callable(seen[1])

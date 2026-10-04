@@ -10,7 +10,8 @@ from typing import Any
 
 import pandas as pd
 import yaml
-from feast import Entity, FeatureStore, FeatureView, FileSource, RepoConfig
+from feast import Entity, FeatureStore, FeatureView, RepoConfig
+from feast.data_source import DataSource
 
 from retail_ml import config
 from retail_ml.features import SELLER_FEATURES
@@ -63,7 +64,7 @@ def apply_feature_definitions(store: FeatureStore, repo: Path) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     objects: list[Any] = [
-        v for v in vars(module).values() if isinstance(v, Entity | FileSource | FeatureView)
+        v for v in vars(module).values() if isinstance(v, Entity | DataSource | FeatureView)
     ]
     store.apply(objects)
 

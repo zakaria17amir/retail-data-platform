@@ -84,7 +84,9 @@ models:
         data_tests: [not_null, unique]
 
   - name: stg_clickstream
-    description: One row per clickstream event (silver events/clickstream), `_run_id` dropped.
+    description: >
+      One row per clickstream event (silver events/clickstream), `_run_id` dropped; rank,
+      rec_model_version and rec_strategy are set on recommendation_shown/recommendation_clicked.
     columns:
       - name: event_id
         data_tests: [not_null, unique]

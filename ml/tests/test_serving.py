@@ -23,7 +23,7 @@ from sklearn.pipeline import Pipeline
 from retail_ml.data import materialize
 from retail_ml.features import SELLER_FEATURES, OrderFeatures
 from retail_ml.late_delivery.train import MODEL_INPUT_COLUMNS, ProbabilityModel, model_inputs
-from retail_ml.serving.app import create_app
+from retail_ml.serving import app as serving_app
 from retail_ml.serving.metrics import PROBABILITY_BUCKETS
 from retail_ml.serving.model import (
     FeatureStoreUnavailable,
@@ -33,6 +33,15 @@ from retail_ml.serving.model import (
     seller_lookup,
     single_threaded,
 )
+from retail_ml.serving.recommend import Sources
+
+
+def create_app(**kwargs: Any) -> Any:
+    """Late-delivery app with the recommender side stubbed out (see test_serving_recommend)."""
+    return serving_app.create_app(
+        load_recommender=lambda: None, load_sources=lambda: Sources(None, None, {}), **kwargs
+    )
+
 
 PREDICT = "/predict/late-delivery"
 PAYLOAD: dict[str, Any] = {

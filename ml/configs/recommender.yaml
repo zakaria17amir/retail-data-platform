@@ -1,0 +1,34 @@
+# Two-stage session recommender on the simulated offline sessions. Paths are relative to GOLD_DIR.
+# Test: converting sessions starting >= test_start. Ranker rows: sessions in [ranker_start,
+# test_start) scored with stage 1 fit before ranker_start; test/serving stage 1 is fit before test_start.
+experiment: recommender
+registered_model: recommender
+sessions_path: ml/sessions_offline.parquet
+products_path: dim_product.parquet
+order_items_path: fct_order_items.parquet
+split:
+  ranker_start: "2018-03-01"
+  test_start: "2018-06-01"
+k: 10
+n_candidates: 100  # per product, co-vis and ALS each, and the merged Redis list
+last_products: 5  # session anchors = session_features.last_product_ids
+pool_size: 100  # top candidates from the session's last products' lists, reranked
+pop_pool: 50  # + this many from pop:category:<last category>, then pop:global
+als:
+  factors: 64
+  regularization: 0.05
+  iterations: 15
+  alpha: 1.0
+  random_state: 42
+lightgbm:
+  objective: lambdarank
+  n_estimators: 300
+  learning_rate: 0.05
+  num_leaves: 31
+  min_child_samples: 20
+  subsample: 0.8
+  subsample_freq: 1
+  colsample_bytree: 0.8
+  random_state: 42
+  deterministic: true
+  verbose: -1

@@ -3,9 +3,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from conftest import local_store
+from feast.data_source import PushMode
 
 from retail_ml.config import redis_connection
-from retail_ml.data import historical_seller_features, materialize
+from retail_ml.data import feature_store, historical_seller_features, materialize
 from retail_ml.features import SELLER_FEATURES
 
 
@@ -28,6 +29,11 @@ def test_redis_url_becomes_feast_connection_string(
     else:
         monkeypatch.setenv("REDIS_URL", url)
     assert redis_connection() == expected
+
+
+def test_online_keys_expire_after_a_week(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FEAST_REGISTRY_PATH", str(tmp_path / "registry.db"))
+    assert feature_store().config.online_store.key_ttl_seconds == 7 * 24 * 3600
 
 
 def _ts(s: str) -> pd.Timestamp:
@@ -91,3 +97,73 @@ def test_materialize_loads_latest_snapshot_into_online_store(
         entity_rows=[{"seller_id": "s1"}, {"seller_id": "s2"}],
     ).to_df()
     assert online["seller_orders_90d"].tolist() == [9, 4]
+
+
+SESSION_FIELDS = [
+    "n_events",
+    "n_product_views",
+    "n_categories",
+    "last_category",
+    "last_product_ids",
+    "n_cart_adds",
+    "dwell_seconds",
+    "session_start_ts",
+]
+
+
+def test_session_and_popularity_views_follow_the_contract(gold_dir: Path, tmp_path: Path) -> None:
+    store = local_store(tmp_path)
+    views = {v.name: v for v in store.list_feature_views()}
+    session, popularity = views["session_features"], views["product_popularity"]
+    assert session.entities == ["session"] and popularity.entities == ["product"]
+    assert [f.name for f in session.features] == SESSION_FIELDS
+    assert [f.name for f in popularity.features] == ["views_1h", "views_24h", "carts_24h"]
+    assert session.ttl == pd.Timedelta(days=1) and popularity.ttl == pd.Timedelta(days=7)
+    assert session.stream_source.name == "session_push"
+    assert popularity.stream_source.name == "popularity_push"
+    assert {s.name for s in store.list_data_sources()} >= {"session_push", "popularity_push"}
+    assert [f.name for f in views["seller_stats"].features] == SELLER_FEATURES
+
+
+def test_pushed_dataset_time_rows_are_served_online(gold_dir: Path, tmp_path: Path) -> None:
+    store = local_store(tmp_path)
+    # dataset time (years before wall clock), as the Spark realtime app pushes it
+    session = pd.DataFrame(
+        {
+            "session_id": ["s1"],
+            "n_events": [5],
+            "n_product_views": [3],
+            "n_categories": [1],
+            "last_category": ["toys"],
+            "last_product_ids": ["p1,p2,p3"],
+            "n_cart_adds": [1],
+            "dwell_seconds": [240.0],
+            "session_start_ts": [_ts("2018-01-10 10:00")],
+            "event_ts": [_ts("2018-01-10 10:04")],
+        }
+    )
+    store.push("session_push", session, to=PushMode.ONLINE)
+    store.push(
+        "popularity_push",
+        pd.DataFrame(
+            {
+                "product_id": ["p1"],
+                "views_1h": [2],
+                "views_24h": [7],
+                "carts_24h": [1],
+                "event_ts": [_ts("2018-01-10 10:04")],
+            }
+        ),
+        to=PushMode.ONLINE,
+    )
+    s = store.get_online_features(
+        features=[f"session_features:{c}" for c in SESSION_FIELDS],
+        entity_rows=[{"session_id": "s1"}, {"session_id": "unknown"}],
+    ).to_dict()
+    assert s["last_product_ids"] == ["p1,p2,p3", None]
+    assert s["n_product_views"] == [3, None] and s["dwell_seconds"] == [240.0, None]
+    p = store.get_online_features(
+        features=["product_popularity:views_24h", "product_popularity:carts_24h"],
+        entity_rows=[{"product_id": "p1"}],
+    ).to_dict()
+    assert p["views_24h"] == [7] and p["carts_24h"] == [1]

@@ -15,6 +15,7 @@
   "snapshot.mode": "initial",
   "tombstones.on.delete": "false",
   "heartbeat.interval.ms": "10000",
+  "poll.interval.ms": "100",
   "time.precision.mode": "connect",
   "decimal.handling.mode": "precise",
   "key.converter": "io.confluent.connect.avro.AvroConverter",

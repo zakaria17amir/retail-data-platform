@@ -1,5 +1,5 @@
-"""FastAPI serving for the late-delivery champion: `/predict/late-delivery`, `/health`, `/reload`,
-`/metrics`. Run: `uvicorn retail_ml.serving.app:app`."""
+"""FastAPI serving for the registry champions: `/predict/late-delivery`, `/recommend`, `/health`,
+`/reload`, `/metrics`. Run: `uvicorn retail_ml.serving.app:app`."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
+from redis.exceptions import RedisError
 
 from retail_ml.late_delivery.train import model_inputs
 from retail_ml.serving.metrics import Metrics
@@ -23,6 +24,16 @@ from retail_ml.serving.model import (
     SellerLookup,
     load_champion,
     load_seller_lookup,
+)
+from retail_ml.serving.recommend import (
+    CandidatesUnpublished,
+    Recommender,
+    RecommendRequest,
+    RecommendResponse,
+    Sources,
+    load_recommender,
+    load_sources,
+    recommend,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,11 +82,15 @@ class Health(BaseModel):
 class _State:
     model: LoadedModel | None = None
     lookup: SellerLookup | None = None
+    recommender: Recommender | None = None
+    sources: Sources | None = None
 
 
 def create_app(
     load_model: Callable[[], LoadedModel | None] = load_champion,
     load_lookup: Callable[[], SellerLookup] = load_seller_lookup,
+    load_recommender: Callable[[], Recommender | None] = load_recommender,
+    load_sources: Callable[[], Sources] = load_sources,
 ) -> FastAPI:
     metrics = Metrics()
     state = _State()
@@ -100,7 +115,21 @@ def create_app(
             state.lookup = load_lookup()
         except Exception:
             logger.exception("online feature store not ready; retried on first prediction")
+        load_recommender_champion()
+        try:
+            state.sources = load_sources()
+        except Exception:
+            logger.exception("recommend sources not ready; retried on first request")
         yield
+
+    def load_recommender_champion() -> None:
+        try:
+            if loaded := load_recommender():
+                state.recommender = loaded
+            else:
+                logger.warning("no recommender champion; /recommend serves popularity")
+        except Exception:
+            logger.exception("recommender champion could not be loaded")
 
     app = FastAPI(title="retail-ml serving", lifespan=lifespan)
 
@@ -150,7 +179,21 @@ def create_app(
         if loaded is None:
             raise HTTPException(503, f"{NO_CHAMPION}; serving unchanged")
         set_model(loaded)
+        load_recommender_champion()
         return health()
+
+    @app.post("/recommend")
+    def recommend_items(req: RecommendRequest) -> RecommendResponse:
+        start = time.perf_counter()
+        try:
+            state.sources = state.sources or load_sources()
+            response = recommend(req, state.sources, state.recommender)
+        except (RedisError, CandidatesUnpublished) as e:
+            logger.exception("recommend candidates unavailable")
+            raise HTTPException(503, f"candidate store (Redis) unavailable: {e}") from None
+        metrics.recommend_requests.labels(response.strategy).inc()
+        metrics.recommend_latency.observe(time.perf_counter() - start)
+        return response
 
     @app.get("/metrics")
     def prometheus() -> Response:

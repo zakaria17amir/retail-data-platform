@@ -278,6 +278,48 @@ would push the watermark years ahead and drop all subsequent clickstream.
 Flink/Kafka Streams deliberately not used (one stream engine; documented as the sub-second choice).
 Containers: `redis`, `feast` push server. Profile `realtime`.
 
+**Amendments (Phase 5, ADR-0007).**
+- *Scoring engine.* Streaming scoring is a Python Kafka consumer (`retail-ml stream-score`), not a
+  Spark query: the Spark image runs Python 3.10 and cannot load the Python 3.12 `retail_ml` artefact.
+  It consumes `cdc.olist.orders` transitions to `approved` (create/update whose before image is not
+  `approved`; snapshot reads excluded), keeps the champion in-process, and writes `ml.order_risk`
+  itself (`INSERT … ON CONFLICT DO NOTHING`: first score wins, idempotent under redelivery; table in
+  schema `ml`, outside the CDC publication), the topic and Delta `gold/ml/pred_late_delivery_rt/`
+  (at least once). Debezium `poll.interval.ms` 100. Measured: burst of 50 approvals p50 344 / p95
+  380 ms (Postgres commit → scored); approve → `order_risk` 0.52 s and 1.28 s in two e2e runs.
+- *Session features* come from the bronze events Delta tables (`spark-realtime`), not Kafka. Spark
+  forbids `session_window` in update mode, so sessions are `applyInPandasWithState` keyed by
+  `session_id` (30-min gap; pandas/pyarrow added to the Spark image). The watermark is 48 h, the
+  bronze watermark: bronze commits one event type's table at a time, ~20 dataset h apart at
+  `REPLAY_SPEED=3600`, and a shorter watermark would drop the later-committed types' rows. The pushed
+  `event_ts` is last event + `n_events` ms, strictly increasing per update, because per-type bronze
+  tables deliver a session's events out of order and Feast's Redis store skips non-newer writes.
+  Popularity `views_1h` is the newest clock hour of 24 h windows sliding by 1 h (coarse); 49 h
+  watermark; pushed `event_ts` = that hour's start + `views_24h + carts_24h` µs, so it is strictly
+  newer on every count change.
+- *Feast push server* `feast-server`; Redis on a named volume with AOF. Online keys have a 7-day
+  wall-clock TTL (`key_ttl_seconds`), which bounds the pushed sessions in the `noeviction` Redis. It
+  also applies to `seller_stats`, so `materialize` must run at least weekly.
+- *Training data:* the ranker trains on offline-simulated history (`clickstream-sim generate`, 2.03M
+  events from gold orders), not on accumulated live clickstream. Candidates = co-visitation + implicit
+  ALS + category/global popularity padding, retrained and republished when gold publishes (DAGs
+  `generate_sessions` → `train_recommender`, asset-triggered, no nightly cron). Test (18,910
+  synthetic sessions): reranked R@10 0.1165 / NDCG@10 0.0675 / coverage 0.140 vs popularity
+  0.1050 / 0.0550 / 0.024.
+- *`/recommend`:* pool built by a plain-Python `session_pool` pinned equal to the offline
+  `session_pools` by a randomised test; fallbacks category popularity (Portuguese
+  `product_category_name`), then global. `title` is null until enrichment (section 10).
+  p50 42 / p95 140 ms at 20 Locust users — the 50 ms target is missed (per-request CPU: Feast read
+  ~5 ms + predict ~7 ms).
+- *Feedback:* `recommendation_shown/clicked` are stamped with the trigger's dataset time (forward note
+  above); CTR per model version in gold `rpt_recommendation_ctr` / metric `recommendation_ctr` and
+  Power BI. Live feedback currently measures only the cold-start strategy: the sim calls
+  `/recommend` while it generates a session, before the session's events reach Kafka, so the session
+  is unknown and the strategy is `global_popularity`. Rerank CTR per model version needs the sim to
+  call `/recommend` after the session's events are online (backlog).
+- *Dependencies:* `implicit` (ml), `polars` (clickstream-sim), pandas/pyarrow (Spark image),
+  `confluent-kafka[avro]`, `psycopg[binary]`, `deltalake` (ml image); ml-cli memory 3g.
+
 ## 10. GenAI and agents
 
 - **Gateway.** `litellm` proxy container; default route Ollama (native Windows, GPU); hosted API by
@@ -346,9 +388,11 @@ retail-data-platform/
 ```
 
 - Compose profiles: `core`, `ingest`, `demo` (long-running replayer + clickstream-sim on top of
-  `ingest`; `make demo` will use it), `lakehouse`, `analytics`, `ml`, `realtime`, `genai`,
-  `observability`. `make up PROFILE=…`, `make seed`, `make replay`, `make test`, `make demo`
-  (scripted 10-minute end-to-end; doubles as the e2e test).
+  `ingest`; `make demo` will use it), `lakehouse`, `analytics`, `ml`, `realtime` (feast-server,
+  stream-score, spark-realtime and two inits plus Postgres, MinIO, Redpanda, MLflow, Redis and
+  serving; needs `ingest` for CDC and bronze), `genai`, `observability`. `make up PROFILE=…`,
+  `make seed`, `make replay`, `make test`, `make demo` (scripted 10-minute end-to-end; doubles as the
+  e2e test).
 - Tooling: `uv`, Python 3.12, `ruff`, `mypy`, `pre-commit`, `sqlfluff`, `tflint`; all images pinned.
 - CI: `ci.yml` (lint/type, per-package unit tests, dbt parse + unit tests, DAG integrity, image
   builds, `terraform validate/plan`; per-profile integration tests via Compose), `nightly-evals.yml`

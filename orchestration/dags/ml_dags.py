@@ -2,7 +2,16 @@ from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.sdk import DAG, TriggerRule, task
 from common import GOLD, START, default_args
-from ml_common import FEATURES, SCORES, breach_alert, ml_task, retrain_due, train_args
+from ml_common import (
+    FEATURES,
+    SCORES,
+    SESSIONS,
+    breach_alert,
+    ml_task,
+    retrain_due,
+    sessions_task,
+    train_args,
+)
 
 
 def ml_dag(dag_id: str, schedule: object) -> DAG:
@@ -43,3 +52,13 @@ with ml_dag("monitor_late_delivery", [SCORES]):
     )
     # run state follows the leaves: this one fails the run when monitor fails
     monitor >> EmptyOperator(task_id="healthy")
+
+with ml_dag("generate_sessions", [GOLD]):
+    sessions_task(outlets=[SESSIONS])
+
+# asset-triggered only, no weekly cron: the sessions are a deterministic function of gold, so a
+# retrain without a new gold publish would refit the same data
+with ml_dag("train_recommender", [SESSIONS]):
+    # peak 1.98 GiB on the full history
+    train = ml_task("train", train_args("recommender"), mem_limit="3g")
+    train >> ml_task("publish", ["publish-candidates"])

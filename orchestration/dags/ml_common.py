@@ -14,6 +14,7 @@ FEATURES = Asset("redis://redis:6379/0/feast")
 # monitor_late_delivery runs on it for a daily cadence after scoring; monitor itself no longer reads
 # the file (it scores its own simulated-live window from the training Parquet)
 SCORES = Asset("file:///opt/airflow/data/gold/ml/pred_late_delivery.parquet")
+SESSIONS = Asset("file:///opt/airflow/data/gold/ml/sessions_offline.parquet")
 # optional overrides of the image's documented defaults, forwarded only when set for Airflow
 PASSTHROUGH = (
     "GIT_SHA",
@@ -63,7 +64,30 @@ def breach_alert(ti: Any = None) -> None:
         log.exception("breach alert not sent")
 
 
-def ml_task(task_id: str, args: list[str], s3: bool = False, **kwargs: Any) -> DockerOperator:
+def sessions_task(**kwargs: Any) -> DockerOperator:
+    # offline session history for the recommender, from gold (no network needed)
+    return DockerOperator(
+        task_id="generate",
+        image="retail-clickstream-sim",
+        command=[
+            "generate",
+            "--gold-dir",
+            "/data/gold",
+            "--out",
+            "/data/gold/ml/sessions_offline.parquet",
+        ],
+        mounts=[Mount(target="/data", source=f"{os.environ['HOST_REPO_DIR']}/data", type="bind")],
+        mount_tmp_dir=False,
+        mem_limit="2g",
+        auto_remove="success",
+        pool="ml",
+        **kwargs,
+    )
+
+
+def ml_task(
+    task_id: str, args: list[str], s3: bool = False, mem_limit: str = "2g", **kwargs: Any
+) -> DockerOperator:
     env = {
         "MLFLOW_TRACKING_URI": "http://mlflow:5000",
         "REDIS_URL": "redis://redis:6379/0",
@@ -98,7 +122,7 @@ def ml_task(task_id: str, args: list[str], s3: bool = False, **kwargs: Any) -> D
             Mount(target="/feature_repo", source=f"{repo}/ml/feature_repo", type="bind"),
         ],
         mount_tmp_dir=False,
-        mem_limit="2g",
+        mem_limit=mem_limit,
         auto_remove="success",
         **kwargs,
     )

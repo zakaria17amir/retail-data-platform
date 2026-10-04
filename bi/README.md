@@ -32,9 +32,9 @@ bi/
 ```
 
 Every table is an import partition
-`Parquet.Document(File.Contents(GoldFolder & "\<model>.parquet"))`. `fct_sessions`, `fct_events` and
-`rpt_funnel` additionally drop rows with a null key (dbt-duckdb writes one all-null row for an empty
-external model).
+`Parquet.Document(File.Contents(GoldFolder & "\<model>.parquet"))`. `fct_sessions`, `fct_events`,
+`rpt_funnel`, `fct_recommendations` and `rpt_recommendation_ctr` additionally drop rows with a null
+key (dbt-duckdb writes one all-null row for an empty external model).
 
 ## Measures (one metric, one definition)
 
@@ -52,6 +52,9 @@ No other business logic lives in Power BI.
 | Sessions | fct_sessions | `sessions` | `COUNTROWS(fct_sessions)` |
 | Checkout Sessions | fct_sessions | `checkout_sessions` | rows where `has_checkout` |
 | Conversion Rate | fct_sessions | `conversion_rate` | `DIVIDE([Checkout Sessions], [Sessions])` |
+| Recommendations Shown | fct_recommendations | `recommendations_shown` | `COUNTROWS(fct_recommendations)` |
+| Recommendations Clicked | fct_recommendations | `recommendations_clicked` | rows where `is_clicked` |
+| CTR | fct_recommendations | `recommendation_ctr` | `DIVIDE([Recommendations Clicked], [Recommendations Shown])` |
 
 ## Relationships
 
@@ -63,7 +66,8 @@ All many-to-one, single direction.
   filters reach them through `fct_orders`.
 - `fct_order_items` → `dim_product` (`product_sk`), `dim_seller` (`seller_sk`);
   `fct_payments` → `dim_payment_type`.
-- `fct_sessions`, `fct_events`, `rpt_daily_sales`, `rpt_funnel` → `dim_date` on their day column;
+- `fct_sessions`, `fct_events`, `fct_recommendations`, `rpt_daily_sales`, `rpt_funnel`,
+  `rpt_recommendation_ctr` → `dim_date` on their day column;
   `rpt_delivery_sla`, `rpt_product_performance` → `dim_date` on `order_month` (first of month).
 - `rpt_customer_360` and `rpt_data_quality` stand alone.
 

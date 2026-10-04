@@ -37,5 +37,6 @@ markers = [
   "integration: needs running Compose services",
   "spark: needs a SparkSession (run inside the spark container)",
   "ingest: needs the ingest profile and reseeds the database",
+  "realtime: needs the ingest + realtime profiles and writes test rows to the stack",
 ]
 testpaths = ["ingestion", "lakehouse", "tests"]

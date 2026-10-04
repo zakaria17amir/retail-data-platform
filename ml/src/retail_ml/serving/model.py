@@ -59,10 +59,12 @@ def load_champion(name: str = MODEL_NAME) -> LoadedModel | None:
 
 
 def single_threaded(model: PyFuncModel) -> PyFuncModel:
-    """One OpenMP thread per LightGBM predict: inputs are one row and the uvicorn workers are the
-    parallelism (n_jobs only sets prediction threads; the trees are unchanged)."""
+    """One OpenMP thread per LightGBM predict: inputs are small (one order, one session's pool)
+    and the uvicorn workers are the parallelism (n_jobs only sets prediction threads; the trees
+    are unchanged). Covers the late-delivery pipeline and the recommender's `ranker`."""
     python_model = model.unwrap_python_model()  # type: ignore[no-untyped-call]
-    for _, step in getattr(getattr(python_model, "pipeline", None), "steps", []):
+    steps = [s for _, s in getattr(getattr(python_model, "pipeline", None), "steps", [])]
+    for step in [*steps, getattr(python_model, "ranker", None)]:
         if isinstance(step, lgb.LGBMModel):
             step.set_params(n_jobs=1)
     return model

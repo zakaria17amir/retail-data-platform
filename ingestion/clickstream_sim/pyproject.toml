@@ -5,6 +5,7 @@ description = "Synthetic clickstream derived from Olist orders"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "confluent-kafka[avro]",
+  "polars",
   "psycopg[binary]",
   "python-dotenv",
 ]

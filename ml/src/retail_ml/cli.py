@@ -13,7 +13,7 @@ from mlflow import MlflowClient
 from retail_ml import config
 from retail_ml.data import apply_feature_definitions, feature_store, materialize
 
-MODELS = ["late_delivery", "demand_forecast"]
+MODELS = ["late_delivery", "demand_forecast", "recommender"]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -32,6 +32,8 @@ def _parser() -> argparse.ArgumentParser:
     score = sub.add_parser("score", help="score open orders with the champion -> gold Parquet")
     score.add_argument("model", choices=["late_delivery"])
     sub.add_parser("materialize", help="apply Feast definitions and load the online store")
+    sub.add_parser("publish-candidates", help="champion recommender candidates -> Redis")
+    sub.add_parser("stream-score", help="score CDC order approvals with the late-delivery champion")
     monitor = sub.add_parser("monitor", help="drift + delayed ground truth; exit 3 on breach")
     monitor.add_argument("model", choices=["late_delivery"])
     monitor.add_argument("--config", type=Path, default=None)
@@ -49,6 +51,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "forecast" or (args.command == "train" and args.model == "demand_forecast"):
         return _demand(args)
+
+    if args.command == "publish-candidates":
+        from retail_ml.recommender.publish import publish_candidates
+
+        print(json.dumps(publish_candidates(MlflowClient(), "recommender")))
+        return 0
+
+    if args.command == "stream-score":
+        from retail_ml.streaming.score import main as stream_score
+
+        return stream_score()
+
+    if args.command == "train" and args.model == "recommender":
+        from retail_ml.recommender.train import load_recommender_config
+        from retail_ml.recommender.train import train as train_recommender
+
+        rec = train_recommender(
+            load_recommender_config(args.config),
+            promotion_mode=args.promotion_mode or config.promotion_mode(),
+        )
+        print(
+            json.dumps(
+                {"version": rec.version, "decision": asdict(rec.decision), "metrics": rec.metrics},
+                indent=2,
+            )
+        )
+        return 0
 
     store = feature_store()
     apply_feature_definitions(store, config.feast_repo_path())
