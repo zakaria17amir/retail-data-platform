@@ -145,5 +145,8 @@ def mlflow_uri(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
     monkeypatch.chdir(tmp_path)  # default artefact root ./mlruns lands in tmp_path
     monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
+    # an earlier set_experiment (e.g. a train() run) points at an id this fresh DB doesn't have
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_ID", raising=False)
+    monkeypatch.setattr(mlflow.tracking.fluent, "_active_experiment_id", None)
     mlflow.set_tracking_uri(uri)
     return uri
