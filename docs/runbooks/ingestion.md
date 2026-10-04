@@ -100,8 +100,8 @@ make reset-bronze SEED=seed   # or SEED=seed-sample
 
 `ingestion/reset-bronze.sh` stops spark; stops the `olist-postgres` connector and deletes its
 offsets; drops the `olist_debezium` replication slot; deletes the `cdc.olist.*` and `events.*`
-topics and the `clickstream-sim` consumer group; `mc rm`s `bronze/` and `_checkpoints/` in the
-bucket; reloads Postgres; re-registers the connector (`connect-init`), waits up to 900 s for
+topics and the `clickstream-sim` consumer group; `mc rm`s `bronze/`, `silver/` and `_checkpoints/`
+in the bucket (silver is rebuilt by the next `make silver`); reloads Postgres; re-registers the connector (`connect-init`), waits up to 900 s for
 "Snapshot completed"; starts spark.
 
 Never delete `_checkpoints/bronze/*` alone: Delta writes use `txnAppId` + `txnVersion` = batch id,

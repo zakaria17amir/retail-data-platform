@@ -29,12 +29,14 @@ kafka_partition, kafka_offset, kafka_timestamp, schema_id, ingest_ts, ingest_dat
   clean (`make lint` covers `ingestion lakehouse tests`).
 - Cleaning rules are pure functions on Spark DataFrames, each with a `rule_id` and a `spark`-marked
   pytest on a tiny in-memory DataFrame. Test module names unique across the repo (mypy).
-- Nothing dropped silently: every row that does not reach silver is in `_rejects` with `rule_id`
-  and `reason`, except superseded CDC versions of current-state tables (that is history, kept in bronze).
+- Rejects → `silver/_rejects/<domain>/<table>/` with `rule_id`, `reason`, `record_json`; per-rule
+  counts in `silver/_rule_metrics`. Nothing is dropped silently, except superseded CDC versions of
+  current-state tables and, for SCD2 tables, changes that alter no tracked column; these are
+  reconciled by distinct key in the quality gates.
 - Every silver write is idempotent: re-running the job on the same bronze data changes nothing.
 - Spark session time zone `UTC`. Olist timestamps are São Paulo wall clock: `<x>_local`
   (`timestamp_ntz`) keeps the original, `<x>_utc` = `to_utc_timestamp(local, "America/Sao_Paulo")`.
-- Silver root `s3a://${LAKEHOUSE_BUCKET}/silver`; checkpoints `s3a://${LAKEHOUSE_BUCKET}/_checkpoints/silver/<domain>_<table>`.
+- Silver root `s3a://${LAKEHOUSE_BUCKET}/silver`; checkpoints `s3a://${LAKEHOUSE_BUCKET}/_checkpoints/silver/<domain>_<table>` (events: `events_clickstream_<type>`, one per bronze source).
 - No new Docker images or jars. New Python deps only in the new `lakehouse/quality` package.
 - Conventional commits. Parallel tasks run in separate git worktrees and touch only their own files.
 - Scheduling (silver hourly, `maintain` weekly, quality after each silver load) and the Power BI quality
@@ -81,7 +83,8 @@ Column `updated_at` is dropped everywhere.
 Rule ids (exact): `cdc_exact_duplicate`, `orders_null_purchase_ts`, `geo_out_of_bbox`,
 `event_cast_failed`, `event_negative_quantity`, `event_duplicate`, `session_over_24h`.
 Non-rejecting transforms also carry ids for documentation and metrics (`rows_rejected = 0`):
-`cdc_collapse`, `ts_localise`, `orders_timeline_flags`, `category_translate`.
+`cdc_collapse`, `ts_localise`, `orders_timeline_flags`, `category_translate`, `rename_columns`
+(products `lenght` typos, geolocation prefix).
 
 Olist's "duplicated order items" are quantity units (one row per unit, distinct `order_item_id`),
 not defects; silver keeps one row per `(order_id, order_item_id)`. True duplicates are redelivered

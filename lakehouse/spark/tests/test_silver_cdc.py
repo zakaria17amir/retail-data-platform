@@ -50,6 +50,17 @@ def test_exact_duplicates_rejects_same_key_and_lsn_only(spark: SparkSession) -> 
     ]
 
 
+def test_exact_duplicates_rejects_key_and_lsn_already_in_silver(spark: SparkSession) -> None:
+    existing = flatten_cdc(bronze(spark, [cdc("r", "a", "x", 1, 0)]))
+    flat = flatten_cdc(bronze(spark, [cdc("r", "a", "x", 1, 5), cdc("u", "a", "y", 2, 6)]))
+    kept, rejected = exact_duplicates(flat, ["id"], existing)
+    assert [(r.id, r._source_lsn) for r in kept.collect()] == [("a", 2)]
+    assert [(r.id, r._kafka_offset, r.reason) for r in rejected.collect()] == [
+        ("a", 5, "duplicate delivery of key+lsn (already in silver)")
+    ]
+    assert rejected.columns == [*flat.columns, "reason"]
+
+
 def test_collapse_latest_picks_max_lsn_then_offset(spark: SparkSession) -> None:
     flat = flatten_cdc(
         bronze(

@@ -122,6 +122,8 @@ BEGIN
         EXECUTE format(
             'CREATE OR REPLACE TRIGGER set_updated_at BEFORE UPDATE ON olist.%I
              FOR EACH ROW EXECUTE FUNCTION olist.set_updated_at()', t);
+        -- Debezium delete events then carry the full row in `before`, not just the PK
+        EXECUTE format('ALTER TABLE olist.%I REPLICA IDENTITY FULL', t);
     END LOOP;
 END $$;
 
