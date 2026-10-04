@@ -1,15 +1,18 @@
 """Bronze → silver: one availableNow Delta stream per bronze source, applied with foreachBatch.
 
 Every write of a micro-batch (rejects, rule metrics, silver MERGE) carries the Delta txnAppId
-(checkpoint name) and txnVersion (batch id), so a batch replayed after a crash between the writes
-and the checkpoint commit is skipped. Resetting a silver checkpoint therefore requires clearing the
-silver tables, their _rejects and the table's _rule_metrics rows as well.
+silver-<checkpoint name>-<streaming query id> and txnVersion (batch id), so a batch replayed after a
+crash between the writes and the checkpoint commit is skipped. The query id is stored in the
+checkpoint, so a deleted or reset checkpoint starts a fresh transaction namespace and its batches
+(re-numbered from 0) are written instead of being skipped. Without clearing silver too, such a reset
+reprocesses all of bronze: silver converges (MERGE), but old rejects and metrics are appended again.
 """
 
 import argparse
 import logging
 import os
 import secrets
+import threading
 from datetime import datetime, timezone
 
 from delta.tables import DeltaTable
@@ -18,6 +21,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     DoubleType,
+    IntegerType,
     LongType,
     StringType,
     StructField,
@@ -27,6 +31,7 @@ from pyspark.sql.types import (
 
 from lakehouse_spark.bronze.app import build_session
 from lakehouse_spark.silver.cdc import collapse_latest, exact_duplicates, flatten_cdc, merge_current
+from lakehouse_spark.silver.domain.events import event_rules
 from lakehouse_spark.silver.domain.geo import zip_centroids
 from lakehouse_spark.silver.rules import Rule, RuleMetric, apply_rules, transform
 from lakehouse_spark.silver.scd2 import merge_scd2
@@ -69,6 +74,15 @@ EVENT_COLUMNS = (
     "_silver_loaded_at",
     "_run_id",
 )
+EVENT_BRONZE_SCHEMA = StructType(
+    [
+        *(StructField(c, StringType()) for c in EVENT_FIELDS if c != "quantity"),
+        StructField("quantity", IntegerType()),
+        StructField("ingest_ts", TimestampType()),
+        StructField("kafka_partition", IntegerType()),
+        StructField("kafka_offset", LongType()),
+    ]
+)
 METRICS_SCHEMA = StructType(
     [
         StructField("run_id", StringType()),
@@ -81,6 +95,7 @@ METRICS_SCHEMA = StructType(
     ]
 )
 UTC = timezone.utc  # noqa: UP017 - the spark image runs Python 3.10 (no datetime.UTC)
+MAX_BYTES_PER_TRIGGER = "256m"
 log = logging.getLogger("silver")
 
 
@@ -145,6 +160,18 @@ def _metrics_rows(
     return spark.createDataFrame(rows, METRICS_SCHEMA)
 
 
+def with_load_meta(df: DataFrame, run_id: str) -> DataFrame:
+    return df.withColumns({"_silver_loaded_at": F.current_timestamp(), "_run_id": F.lit(run_id)})
+
+
+def create_empty_events(spark: SparkSession, path: str, run_id: str) -> None:
+    # same lineage as a real batch, so the schema matches what later MERGEs insert
+    empty = spark.createDataFrame([], EVENT_BRONZE_SCHEMA)
+    kept, _, _ = apply_rules(events_input(empty), event_rules(None))
+    rows = with_load_meta(kept, run_id).select(*EVENT_COLUMNS)
+    rows.write.format("delta").partitionBy("event_date").save(path)
+
+
 def process_batch(
     batch: DataFrame, batch_id: int, *, spec: TableSpec, root: str, run_id: str, app_id: str
 ) -> int:
@@ -161,9 +188,7 @@ def process_batch(
         else:
             df, chain = flatten_cdc(batch), (*cdc_rules(spec), *spec.rules(spark, silver))
         kept, rejected, metrics = apply_rules(df, chain)
-        kept = kept.withColumns(
-            {"_silver_loaded_at": F.current_timestamp(), "_run_id": F.lit(run_id)}
-        ).persist()
+        kept = with_load_meta(kept, run_id).persist()
         rejected = rejected.withColumns(
             {"_run_id": F.lit(run_id), "_rejected_at": F.current_timestamp()}
         ).persist()
@@ -202,15 +227,21 @@ def is_schema_change(error: Exception) -> bool:
 def run_source(spark: SparkSession, spec: TableSpec, source: str, root: str, run_id: str) -> int:
     name = checkpoint_name(spec, source)
     processed = [0]
+    query_id: list[str] = []
+    started = threading.Event()
 
     def process(batch: DataFrame, batch_id: int) -> None:
+        started.wait()
+        app_id = f"silver-{name}-{query_id[-1]}"
         processed[0] += process_batch(
-            batch, batch_id, spec=spec, root=root, run_id=run_id, app_id=f"silver-{name}"
+            batch, batch_id, spec=spec, root=root, run_id=run_id, app_id=app_id
         )
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        started.clear()
         query = (
             spark.readStream.format("delta")
+            .option("maxBytesPerTrigger", MAX_BYTES_PER_TRIGGER)
             .load(f"{root}/bronze/{source}")
             .writeStream.queryName(f"silver-{name}")
             .option("checkpointLocation", f"{root}/_checkpoints/silver/{name}")
@@ -218,6 +249,8 @@ def run_source(spark: SparkSession, spec: TableSpec, source: str, root: str, run
             .foreachBatch(process)
             .start()
         )
+        query_id.append(str(query.id))
+        started.set()
         try:
             query.awaitTermination()
             break
@@ -235,11 +268,15 @@ def run_table(spark: SparkSession, spec: TableSpec, root: str, run_id: str) -> N
             log.info("%s: bronze/%s does not exist yet, skipped", spec.name, source)
             continue
         processed += run_source(spark, spec, source, root, run_id)
-    if spec.name == "geo/geolocation_points" and processed:
-        points = read_if_exists(spark, f"{root}/silver/{spec.name}")
-        assert points is not None
-        centroids = zip_centroids(points.filter(~F.col("_is_deleted")))
-        centroids.write.format("delta").mode("overwrite").save(f"{root}/silver/geo/zip_centroids")
+    path = f"{root}/silver/{spec.name}"
+    if spec.mode == "events" and not DeltaTable.isDeltaTable(spark, path):
+        create_empty_events(spark, path, run_id)
+    if spec.name == "geo/geolocation_points":
+        points = read_if_exists(spark, path)
+        centroids_path = f"{root}/silver/geo/zip_centroids"
+        if points is not None and (processed or not DeltaTable.isDeltaTable(spark, centroids_path)):
+            centroids = zip_centroids(points.filter(~F.col("_is_deleted")))
+            centroids.write.format("delta").mode("overwrite").save(centroids_path)
 
 
 def new_run_id() -> str:

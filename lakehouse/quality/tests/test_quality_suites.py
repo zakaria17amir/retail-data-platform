@@ -342,3 +342,39 @@ def test_main_exit_codes_and_dq_results_appended(
         "details",
         "checked_at",
     ]
+
+
+def _empty(path: str, columns: dict[str, pa.DataType]) -> None:
+    schema = pa.schema(list(columns.items()))
+    write_deltalake(path, schema.empty_table(), mode="overwrite", schema_mode="overwrite")
+
+
+def test_empty_tables_do_not_fail_criticals(lake: str, capsys: pytest.CaptureFixture[str]) -> None:
+    ts = pa.timestamp("us", tz="UTC")
+    events = {c: pa.string() for c in TABLES["events/clickstream"].columns}
+    _empty(f"{lake}/silver/events/clickstream", events | {"_silver_loaded_at": ts})
+    categories = {c: pa.string() for c in TABLES["catalog/categories"].columns}
+    _empty(
+        f"{lake}/silver/catalog/categories",
+        categories | {"_silver_loaded_at": ts, "_is_deleted": pa.bool_()},
+    )
+    row = pa.struct([("product_category_name", pa.string())])
+    _empty(
+        f"{lake}/bronze/olist/product_category_name_translation",
+        {"op": pa.string(), "after": row, "before": row},
+    )
+
+    checks = run_checks(lake, NOW)
+    failed = _failed(checks)
+    assert [(c.table, c.expectation, c.severity, c.observed) for c in failed] == [
+        ("catalog/categories", "freshness", "warning", "empty"),
+        ("events/clickstream", "freshness", "warning", "empty"),
+    ]
+    rowcount = next(
+        c
+        for c in checks
+        if (c.table, c.expectation) == ("catalog/categories", "rowcount_vs_bronze")
+    )
+    assert rowcount.observed == "silver=0 bronze=0 rejected=0"
+    assert any(c.expectation == "product_id_in_products" and c.success for c in checks)
+    assert main(["run", "--root", lake]) == 0

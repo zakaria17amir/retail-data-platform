@@ -1,3 +1,4 @@
+import shutil
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -263,3 +264,90 @@ def test_non_schema_errors_are_not_retried(
     with pytest.raises(StreamingQueryException):
         run_table(spark, EVENTS, root, "r1")
     assert calls == [0]
+
+
+def _checkpoint(root: str, name: str) -> Path:
+    return Path(urlparse(root).path) / "_checkpoints" / "silver" / name
+
+
+def test_checkpoint_reset_does_not_skip_new_rows(spark: SparkSession, root: str) -> None:
+    _things(spark, root)
+    run_table(spark, THINGS, root, "r1")
+    shutil.rmtree(_checkpoint(root, "test_things"))
+    later = [cdc("u", "a", "z", 4, 4), cdc("c", "c", "bad", 5, 5)]
+    _append(spark, root, "olist/things", bronze(spark, later))
+    run_table(spark, THINGS, root, "r2")
+
+    rows = _silver(spark, root, "test/things").collect()
+    assert [(r.id, r.name, r._run_id) for r in rows] == [("a", "z", "r2")]
+    rejects = _silver(spark, root, "_rejects/test/things").filter("_run_id = 'r2'").collect()
+    assert '"id":"c"' in " ".join(r.record_json for r in rejects)
+    assert _metrics(spark, root, "r2") == [
+        ("test/things", "cdc_exact_duplicate", 6, 1),
+        ("test/things", "cdc_collapse", 5, 0),
+        ("test/things", "test_bad_name", 3, 2),
+    ]
+
+
+def test_events_table_created_empty_without_bronze(spark: SparkSession, root: str) -> None:
+    run_table(spark, EVENTS, root, "r0")
+    path = f"{root}/silver/events/clickstream"
+    empty = _silver(spark, root, "events/clickstream")
+    assert empty.columns == EVENT_COLUMNS
+    assert empty.count() == 0
+    detail = DeltaTable.forPath(spark, path).detail().collect()[0]
+    assert detail["partitionColumns"] == ["event_date"]
+
+    _append(spark, root, "events/page_view", _events(spark, [("e1", 0)]))
+    run_table(spark, EVENTS, root, "r1")
+    loaded = _silver(spark, root, "events/clickstream")
+    assert loaded.schema == empty.schema
+    assert [(r.event_id, r._run_id) for r in loaded.collect()] == [("e1", "r1")]
+
+
+def _events_snapshot(spark: SparkSession, root: str) -> tuple[Any, ...]:
+    tables = ("events/clickstream", "_rejects/events/clickstream", "_rule_metrics")
+    rows = sorted(tuple(r) for r in _silver(spark, root, "events/clickstream").collect())
+    rejects = sorted(
+        tuple(r) for r in _silver(spark, root, "_rejects/events/clickstream").collect()
+    )
+    return rows, rejects, [_version(spark, root, t) for t in tables]
+
+
+def test_events_crash_rerun_with_existing_table(spark: SparkSession, root: str) -> None:
+    _append(spark, root, "events/page_view", _events(spark, [("e1", 0)]))
+    run_table(spark, EVENTS, root, "r1")
+    _append(spark, root, "events/page_view", _events(spark, [("e2", 1), ("e1", 2)]))
+    run_table(spark, EVENTS, root, "r2")
+    once = _events_snapshot(spark, root)
+    assert len(once[1]) == 1
+
+    commits = _checkpoint(root, "events_clickstream_page_view") / "commits"
+    for name in ("1", ".1.crc"):
+        (commits / name).unlink(missing_ok=True)
+    run_table(spark, EVENTS, root, "r3")
+    assert _events_snapshot(spark, root) == once
+    assert _metrics(spark, root, "r3") == []
+
+
+GEO_ROW = (
+    "struct<geolocation_pk:bigint,geolocation_zip_code_prefix:int,geolocation_lat:double,"
+    "geolocation_lng:double,geolocation_city:string,geolocation_state:string,updated_at:string>"
+)
+GEO_BRONZE = (
+    f"op string, before {GEO_ROW}, after {GEO_ROW}, source struct<lsn:bigint,ts_ms:bigint>, "
+    "kafka_offset bigint"
+)
+
+
+def test_zip_centroids_rebuilt_when_missing(spark: SparkSession, root: str) -> None:
+    geo = next(spec for spec in TABLES if spec.name == "geo/geolocation_points")
+    point = (1, 1001, -23.5, -46.6, "sao paulo", "SP", None)
+    data = [("r", None, point, (1, 1_496_318_400_000), 0)]
+    _append(spark, root, "olist/geolocation", spark.createDataFrame(data, GEO_BRONZE))
+    run_table(spark, geo, root, "r1")
+    shutil.rmtree(Path(urlparse(root).path) / "silver" / "geo" / "zip_centroids")
+    run_table(spark, geo, root, "r2")
+
+    rows = _silver(spark, root, "geo/zip_centroids").collect()
+    assert [(r.zip_code_prefix, r.n_points, r.state) for r in rows] == [(1001, 1, "SP")]

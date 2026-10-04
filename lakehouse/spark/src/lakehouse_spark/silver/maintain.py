@@ -61,7 +61,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retain-hours", type=int, default=168)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    optimize_and_vacuum(build_session("maintain"), args.root.rstrip("/"), args.retain_hours)
+    spark = build_session("maintain")
+    # VACUUM lists files with this parallelism (default 10000 tasks, ~26 s per table on dev)
+    spark.conf.set("spark.sql.sources.parallelPartitionDiscovery.parallelism", "8")
+    optimize_and_vacuum(spark, args.root.rstrip("/"), args.retain_hours)
     return 0
 
 

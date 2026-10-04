@@ -225,6 +225,8 @@ def _rowcount(
 
 
 def _fresh(rows: pd.DataFrame, threshold: pd.Timestamp) -> Outcome:
+    if rows.empty:
+        return False, "empty", f"no rows loaded; expected _silver_loaded_at >= {threshold}"
     latest = pd.to_datetime(rows["_silver_loaded_at"], utc=True).max()
     return bool(pd.notna(latest) and latest >= threshold), str(latest), f">= {threshold}"
 
