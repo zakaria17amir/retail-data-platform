@@ -8,8 +8,11 @@ uv run --project ml pytest ml
 uv run --project ml ruff check ml
 uv run --project ml mypy --config-file ml/pyproject.toml ml/src
 uv run --project ml retail-ml train late_delivery [--config PATH] [--promotion-mode auto|manual]
-uv run --project ml retail-ml promote late_delivery --version N   # manual approval
+uv run --project ml retail-ml train demand_forecast [--config PATH] [--promotion-mode auto|manual]
+uv run --project ml retail-ml promote late_delivery|demand_forecast --version N   # manual approval
 uv run --project ml retail-ml materialize                          # Feast apply + online load
+uv run --project ml retail-ml score late_delivery     # -> $GOLD_DIR/ml/pred_late_delivery.parquet
+uv run --project ml retail-ml forecast demand         # -> $GOLD_DIR/ml/pred_demand_forecast.parquet
 ```
 
 | Env | Default | Used for |
@@ -33,3 +36,23 @@ Reading the metrics:
   2018-03-01 can be delivered (and labelled) after validation starts, and seller snapshots near a
   boundary overlap in their 90-day windows. Labels never leak into features (snapshots count only
   deliveries before `feature_ts`), but adjacent windows are not fully independent.
+
+Demand forecast (`demand_forecast`, config `configs/demand_forecast.yaml`):
+- Only `is_modelled` series are trained/forecast; the rest are logged per run as
+  `excluded_series.csv` (+ `n_series_excluded`). Test window = the last 28 days of `demand_daily`
+  (C … E); backtest = the three 28-day folds before C, each refit on data before its fold start.
+- Features use lags ≥ 28 only (28/35/42/56, 7- and 28-day means of the lag-28 series, calendar,
+  series ids as categoricals), so one Poisson LightGBM forecasts all 28 days directly. The pyfunc
+  takes demand rows (`date, product_category, customer_state, orders`) with the horizon's `orders`
+  NaN and returns one forecast per row; the seasonal-naive baseline (`y[t − 7·ceil(h/7)]`) is
+  logged first with the same interface. Promotion: WAPE lower than the champion's on the same test
+  window, no NaN/negative forecasts.
+- `is_modelled` is computed by dbt for the final cutoff C, so earlier backtest folds select series
+  with slightly later information; the test window is unaffected.
+- The registered model is trained on data before C (so its test WAPE is out of sample); `forecast
+  demand` applies it to the 28 days after E without refitting.
+
+Batch scoring (`score late_delivery`): open orders = approved, `order_delivered_customer_ts_utc`
+null and status not `canceled`/`unavailable`. Seller features are the Feast offline snapshot **as of
+each order's approval** (the training point-in-time join), not wall-clock now: the dataset is
+historical, so "now" is past every snapshot and would give each order post-approval seller stats.
