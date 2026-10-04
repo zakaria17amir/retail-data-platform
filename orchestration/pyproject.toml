@@ -1,0 +1,22 @@
+# Separate uv project (not a workspace member): Airflow's constraint set must not drive the workspace lock.
+# Change deps with Airflow's constraints so the lock matches what the image installs (Dockerfile):
+#   uv add --project orchestration -c https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt <pkg>==<v>
+[project]
+name = "orchestration"
+version = "0.1.0"
+description = "Airflow DAGs for the retail data platform"
+requires-python = "==3.12.*"
+dependencies = [
+  "apache-airflow==3.3.2",
+  "apache-airflow-providers-docker==4.5.9",
+  "astronomer-cosmos==1.15.1",
+  "deltalake==1.6.6",
+  "great-expectations==1.23.2",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv]
+package = false
+exclude-newer = "2026-09-26T00:00:00Z"

@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -101,3 +101,6 @@ dbt-parse:
 
 sqlfluff:
 	cd analytics && uv run sqlfluff lint models
+
+airflow-cli:
+	docker compose exec airflow airflow $(ARGS)
