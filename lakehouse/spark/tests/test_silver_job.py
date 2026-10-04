@@ -193,6 +193,54 @@ def test_run_table_scd2(spark: SparkSession, root: str) -> None:
     assert all(r._silver_loaded_at is not None for r in versions)
 
 
+def test_run_table_scd2_redelivery_in_later_batch_is_rejected(
+    spark: SparkSession, root: str
+) -> None:
+    _append(spark, root, "olist/people", bronze(spark, [cdc("r", "a", "x", 1, 0)]))
+    run_table(spark, PEOPLE, root, "r1")
+    once = sorted(tuple(r) for r in _silver(spark, root, "test/people").collect())
+    _append(spark, root, "olist/people", bronze(spark, [cdc("r", "a", "x", 1, 1)]))
+    run_table(spark, PEOPLE, root, "r2")
+
+    assert sorted(tuple(r) for r in _silver(spark, root, "test/people").collect()) == once
+    rejects = _silver(spark, root, "_rejects/test/people").collect()
+    assert [(r.rule_id, r.reason, r._run_id) for r in rejects] == [
+        ("cdc_exact_duplicate", "duplicate delivery of key+lsn (already in silver)", "r2")
+    ]
+
+
+ORDER_ROW = (
+    "struct<order_id:string,customer_id:string,order_status:string,"
+    "order_purchase_timestamp:timestamp,order_approved_at:timestamp,"
+    "order_delivered_carrier_date:timestamp,order_delivered_customer_date:timestamp,"
+    "order_estimated_delivery_date:timestamp,updated_at:string>"
+)
+ORDER_BRONZE = (
+    f"op string, before {ORDER_ROW}, after {ORDER_ROW}, source struct<lsn:bigint,ts_ms:bigint>, "
+    "kafka_offset bigint"
+)
+
+
+def test_delete_with_full_before_is_kept_as_deleted(spark: SparkSession, root: str) -> None:
+    orders = next(spec for spec in TABLES if spec.name == "sales/orders")
+    t = datetime(2017, 6, 1, 10, 0, 0)
+    order = ("o1", "c1", "delivered", t, t, t, t, t, None)
+    insert = [("r", None, order, (1, 1_496_318_400_000), 0)]
+    _append(spark, root, "olist/orders", spark.createDataFrame(insert, ORDER_BRONZE))
+    run_table(spark, orders, root, "r1")
+    # REPLICA IDENTITY FULL: the delete's `before` has every column, so no domain rule rejects it
+    delete = [("d", order, None, (2, 1_496_318_401_000), 1)]
+    _append(spark, root, "olist/orders", spark.createDataFrame(delete, ORDER_BRONZE))
+    run_table(spark, orders, root, "r2")
+
+    rows = _silver(spark, root, "sales/orders").collect()
+    assert [(r.order_id, r._is_deleted, r._source_lsn, r._run_id) for r in rows] == [
+        ("o1", True, 2, "r2")
+    ]
+    assert rows[0].order_purchase_ts_local == t
+    assert not DeltaTable.isDeltaTable(spark, f"{root}/silver/_rejects/sales/orders")
+
+
 def test_run_table_events_dedupes_across_runs(spark: SparkSession, root: str) -> None:
     _append(spark, root, "events/page_view", _events(spark, [("e1", 0), ("e2", 1), ("e1", 2)]))
     run_table(spark, EVENTS, root, "r1")
@@ -283,8 +331,8 @@ def test_checkpoint_reset_does_not_skip_new_rows(spark: SparkSession, root: str)
     rejects = _silver(spark, root, "_rejects/test/things").filter("_run_id = 'r2'").collect()
     assert '"id":"c"' in " ".join(r.record_json for r in rejects)
     assert _metrics(spark, root, "r2") == [
-        ("test/things", "cdc_exact_duplicate", 6, 1),
-        ("test/things", "cdc_collapse", 5, 0),
+        ("test/things", "cdc_exact_duplicate", 6, 2),
+        ("test/things", "cdc_collapse", 4, 0),
         ("test/things", "test_bad_name", 3, 2),
     ]
 

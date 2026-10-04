@@ -23,13 +23,22 @@ def flatten_cdc(bronze: DataFrame) -> DataFrame:
     )
 
 
-def exact_duplicates(df: DataFrame, key: Sequence[str]) -> tuple[DataFrame, DataFrame]:
+def exact_duplicates(
+    df: DataFrame, key: Sequence[str], existing: DataFrame | None = None
+) -> tuple[DataFrame, DataFrame]:
     window = Window.partitionBy(*key, "_source_lsn").orderBy("_kafka_offset")
     ranked = df.withColumn("_rn", F.row_number().over(window))
     kept = ranked.filter(F.col("_rn") == 1).drop("_rn")
     rejected = (
         ranked.filter(F.col("_rn") > 1).drop("_rn").withColumn("reason", F.lit(DUPLICATE_REASON))
     )
+    if existing is not None:
+        on, seen = [*key, "_source_lsn"], existing.select(*key, "_source_lsn")
+        redelivered = kept.join(seen, on, "left_semi").select(*df.columns)
+        rejected = rejected.unionByName(
+            redelivered.withColumn("reason", F.lit(f"{DUPLICATE_REASON} (already in silver)"))
+        )
+        kept = kept.join(seen, on, "left_anti").select(*df.columns)
     return kept, rejected
 
 

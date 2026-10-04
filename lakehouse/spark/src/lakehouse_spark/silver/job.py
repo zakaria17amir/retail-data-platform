@@ -5,7 +5,8 @@ silver-<checkpoint name>-<streaming query id> and txnVersion (batch id), so a ba
 crash between the writes and the checkpoint commit is skipped. The query id is stored in the
 checkpoint, so a deleted or reset checkpoint starts a fresh transaction namespace and its batches
 (re-numbered from 0) are written instead of being skipped. Without clearing silver too, such a reset
-reprocesses all of bronze: silver converges (MERGE), but old rejects and metrics are appended again.
+reprocesses all of bronze: silver converges (MERGE), rejects and metrics are appended again, and
+records already in silver are re-rejected (cdc_exact_duplicate / event_duplicate).
 """
 
 import argparse
@@ -104,11 +105,12 @@ def checkpoint_name(spec: TableSpec, source: str) -> str:
     return f"{name}_{source.rsplit('/', 1)[-1]}" if len(spec.bronze) > 1 else name
 
 
-def cdc_rules(spec: TableSpec) -> tuple[Rule, ...]:
+def cdc_rules(spec: TableSpec, spark: SparkSession, silver: str) -> tuple[Rule, ...]:
+    existing = read_if_exists(spark, f"{silver}/{spec.name}")
     dedupe = Rule(
         "cdc_exact_duplicate",
-        "redelivered CDC record (same key and LSN)",
-        lambda df: exact_duplicates(df, spec.key),
+        "redelivered CDC record (same key and LSN, in the batch or already in silver)",
+        lambda df: exact_duplicates(df, spec.key, existing),
     )
     if spec.mode == "scd2":
         return (dedupe,)
@@ -186,7 +188,8 @@ def process_batch(
         if spec.mode == "events":
             df, chain = events_input(batch), spec.rules(spark, silver)
         else:
-            df, chain = flatten_cdc(batch), (*cdc_rules(spec), *spec.rules(spark, silver))
+            df = flatten_cdc(batch)
+            chain = (*cdc_rules(spec, spark, silver), *spec.rules(spark, silver))
         kept, rejected, metrics = apply_rules(df, chain)
         kept = with_load_meta(kept, run_id).persist()
         rejected = rejected.withColumns(
