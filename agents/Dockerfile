@@ -12,6 +12,8 @@ COPY genai/src genai/src
 RUN uv sync --locked --no-dev --no-install-project --project agents
 COPY agents/src agents/src
 RUN uv sync --locked --no-dev --project agents
+# /app/sql = parents[4] of genai.rag.store and agents.shopping_agent.db: `genai rag init`, `agents shop init`
+COPY sql/rag.sql sql/shop.sql sql/
 
 # gold parquet and the dbt target/ (semantic_manifest.json, manifest.json) are mounted at runtime
 RUN useradd --create-home --uid 1000 retail && chown retail /app

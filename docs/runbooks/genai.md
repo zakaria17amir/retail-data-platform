@@ -144,8 +144,12 @@ quote of any order and asks `Approve this order? [y/N]`; only `y` writes (as `sh
 ## 8. Chainlit UI
 
 http://127.0.0.1:8010, profiles "Analytics" and "Shopping". Each graph node shows as a step (tool calls,
-args, SQL, errors); orders show Approve/Reject buttons (timeout = reject). The container mounts
-`data/gold` and `analytics/target` read-only.
+args, SQL, errors); orders show Approve/Reject buttons (timeout = reject). The Shopping profile's
+"Customer id" chat setting (default `DEMO_CUSTOMER_ID` from `.env`) is the Olist customer the assistant
+acts for. It is free text and **not an authentication boundary**: anyone with the UI can type any id,
+so "own orders only" is only as strong as that setting (fine for a 127.0.0.1 demo). The container
+mounts `data/gold` and `analytics/target` read-only; `sql/rag.sql` and `sql/shop.sql` are baked into
+the image at `/app/sql` (rebuild after editing them; the Airflow tasks bind-mount `sql/` instead).
 
 ## 9. Evals
 
@@ -173,6 +177,12 @@ summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals tak
 
 - **GPU memory.** `nvidia-smi` and `ollama ps` show what is loaded. Qwen (~4.7 GB) and bge-m3 (~1.2 GB)
   do not fit 6 GB together; close other GPU apps. If Ollama falls back to CPU, throughput drops sharply.
+- **Context window / VRAM.** `litellm/config.yaml` sets `num_ctx: 8192` on `chat` and `judge`:
+  Ollama's 2-4k default truncates the prompt from the start (the system prompt goes first, silently;
+  the server log says "truncating input prompt"). qwen2.5:7b Q4 with an 8k context is ≈ 5.3 GB
+  (estimate, check `ollama ps`), so on a 6 GB card keep bge-m3 swapped out during chat batches (do not
+  run `rag index`/embeddings alongside enrichment or an agent). If it spills to CPU, lower `num_ctx`
+  (e.g. 6144) and restart litellm.
 - **Model swap latency.** The first call after a swap waits for the model to load. Batch jobs avoid
   per-item swaps (`rag index` runs all summaries before any embedding); running enrichment and an
   agent at the same time makes Ollama swap repeatedly.
@@ -183,7 +193,8 @@ summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals tak
   `OLLAMA_HOST=0.0.0.0:11434`, restart Ollama).
 - **litellm restarting:** `LITELLM_MASTER_KEY` empty (see the log line above).
 - **pgvector tests skip** ("the pgvector `vector` extension is not available") until the swap; litellm's
-  import-time `load_dotenv` makes tests pick up `POSTGRES_DSN`/`RAG_DSN` from `.env`.
+  import-time `load_dotenv` makes tests pick up `POSTGRES_DSN`/`RAG_DSN` from `.env`. In CI they run
+  against a pgvector service container and any skip fails the `lint-test` job.
 - **Many `description:not_english` rejects:** the English check (stopword ratio ≥ 0.15) is untested on
   real Qwen output; inspect `silver/_rejects/product_enriched`.
 
@@ -192,9 +203,53 @@ summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals tak
 - No live numbers yet (enrichment rate, Recall@10/MRR, eval scores).
 - `get_recommendations` emits no `product_view` events, so `/recommend` always serves cold-start
   popularity (`strategy` is returned).
-- The UI's Shopping profile sends no customer id (no identity decided), so own-order lookups need the CLI's
-  `--customer`. At commit `06451e9`, `agents.shopping_agent.tools` has no `default_registry()`, which the
-  UI Shopping profile and `agents eval shopping` import, so both fail until it is added.
-- `query_metric` for `aov` without group-by is rejected by the cost guard (estimate 11.2B rows); the agent
-  must use `run_sql`.
+- The UI "Customer id" setting and the CLI `--customer` are free text, not authentication: "own orders
+  only" holds only for the id typed in.
 - Agent orders stay `created` and do not decrement `shop.stock`.
+
+## Live pass checklist
+
+Run once the models are downloaded; record the numbers here and in ADR-0008.
+
+1. **pgvector swap** (§2): `select version()` = 16.15; `vector` available;
+   `datcollversion = pg_database_collation_actual_version` on every DB; Debezium slot `olist_debezium`
+   reactivates and `confirmed_flush_lsn` advances after a CDC smoke update; `make status` row counts
+   unchanged (orders 99,441, products 32,951); `realtime-sql-init` still works with the new image.
+2. **Gateway:** `/health/liveliness`; `/v1/models` lists the 5 aliases; `chat` answers; `embed` returns
+   1024 dims; `chat-hosted` without a key fails with an auth error (no silent fallback); litellm logs
+   print neither the master key nor prompts.
+3. **Structured output enforced:** with `drop_params: true`, the `json_schema` `response_format` reaches
+   Ollama (`format` in the Ollama request log) and is not dropped. Measure the enrichment first-attempt
+   validity rate.
+4. **Context window:** no "truncating input prompt" in the Ollama log for an analytics plan, a
+   20-review summary or a shopping turn. Measure VRAM with `ollama ps` at `num_ctx` 8192.
+5. **Enrichment 500:** accepted/rejected, `rule_id` histogram (watch `description:not_english`), tok/s
+   and wall time; re-run → all skipped, 0 LLM calls, Delta version unchanged; a product with an injected
+   review is not instruction-following.
+6. **DAGs:** `docker compose --profile genai build chainlit`; `analytics` + `genai` profiles up; `llm`
+   pool exists with 1 slot; trigger `enrich_catalogue` with a small `ENRICH_LIMIT` → `rag_index` fires on
+   the asset → `init` succeeds (reads `/app/sql/rag.sql`) → `index`; `nightly_evals` with
+   `EVAL_LIMIT=5`; the Rendered Template tab shows no secrets.
+7. **RAG:** `rag init`, `index` (all summaries before embeddings: one model swap, check `ollama ps`);
+   re-run prints `0 summaries, 0 embedded, 0 pruned`; `rag eval` writes
+   `genai/eval_data/rag_queries.jsonl` (commit it) and logs vector/text/hybrid Recall@10 and MRR to
+   MLflow; the `--category` filter returns k results (iterative scan).
+8. **Analytics agent (Ollama):** 7B tool calling works through `ollama_chat` + LiteLLM; answers cite the
+   metric/SQL; output-check pass/fallback rate; multi-turn follow-up; clarification path in UI and CLI;
+   overall AOV via `query_metric` = 160.2412.
+9. **Shopping agent:** search → get_product → check_stock → place_order → Approve writes 1
+   order/items/payment as `shop_writer` and CDC carries it to bronze; Reject writes 0 rows; the approved
+   total equals the inserted total; a cross-customer order is refused; `/recommend` cold start is
+   reachable from chainlit (`serving` in the `genai` profile, empty/initialised redis); titles appear
+   once enrichment exists.
+10. **Chainlit:** both profiles; steps stream; chart renders; Approve/Reject buttons; 300 s timeout =
+    reject; Postgres checkpointer: restart the container mid-thread and continue (or document that the
+    Chainlit thread id is not persisted without a data layer); the container stays < 1 g during a heavy
+    `run_sql`.
+11. **Evals** `--limit 10` per suite on Ollama: numbers + wall time with the per-kind breakdown; state
+    that the judge is the same Qwen; hosted comparison only if keys exist.
+12. **Failure modes:** stop Ollama → agent/UI shows a clear error, no partial writes; unknown alias →
+    error surfaced; stop postgres → shopping tools return ERROR messages and the UI recovers after the
+    restart.
+13. **Tracing:** MLflow experiment `genai` has agent and batch traces tagged `prompt_hash` +
+    `model_alias` (UI runs included); `genai-evals` has metrics + the per-case artefact.

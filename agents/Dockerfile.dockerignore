@@ -4,5 +4,7 @@
 !agents/src
 !genai/pyproject.toml
 !genai/src
+!sql/rag.sql
+!sql/shop.sql
 **/__pycache__
 **/*.pyc

@@ -38,10 +38,11 @@ def llm_task(task_id: str, command: list[str], **kwargs: Any) -> DockerOperator:
             "SHOP_DSN": f"postgresql://shop_writer:shop_writer@{db}",
         },
         # the Docker socket is the host's, so bind sources must be host paths; the image ships
-        # agents/src only, so the golden sets come from the checkout like gold and the dbt target
+        # agents/src only, so the golden sets come from the checkout like gold and the dbt target.
+        # sql/ (rag.sql, shop.sql) is also COPYed into the image; the mount keeps it in step
         mounts=[
             Mount(target=f"/app/{path}", source=f"{repo}/{path}", type="bind", read_only=True)
-            for path in ("data/gold", "analytics/target", "agents/evals/data")
+            for path in ("data/gold", "analytics/target", "agents/evals/data", "sql")
         ],
         mount_tmp_dir=False,
         mem_limit="2g",

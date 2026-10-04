@@ -362,8 +362,10 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
 (enrichment rate, Recall@10/MRR, eval scores) exist until the Ollama models are downloaded.
 - *Gateway.* Aliases `chat`/`judge` (`qwen2.5:7b-instruct`) and `embed` (`bge-m3`) on host Ollama;
   `chat-hosted` (`openai/gpt-4.1-mini`) and `judge-hosted` (`anthropic/claude-haiku-4-5`) are chosen by
-  clients when `LLM_PROVIDER=hosted`. No router fallbacks; embeddings always local. Qwen (~4.7 GB) and
-  bge-m3 (~1.2 GB) swap on the 6 GB GPU, so batch jobs run all chat calls, then all embeddings.
+  clients when `LLM_PROVIDER=hosted`. No router fallbacks; embeddings always local. `chat`/`judge` set
+  `num_ctx: 8192` (Ollama's 2-4k default truncates the prompt from the start, dropping the system
+  prompt). Qwen (~4.7 GB; ~5.3 GB with the 8k KV cache, estimate) and bge-m3 (~1.2 GB) swap on the
+  6 GB GPU, so batch jobs run all chat calls, then all embeddings.
 - *Postgres* image `pgvector/pgvector:0.8.6-pg16-bookworm` (PG 16.15) on the existing volume; bookworm
   keeps the collations of `postgres:16.6`. RAG in schema `rag`, shopping tables in `shop`, both outside
   `olist_cdc`.
@@ -377,15 +379,18 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
   `dbt-metricflow`, which opened the DuckDB warehouse read-write); its SQL and `run_sql` share one
   read-only DuckDB over `gold/*.parquet` with external access disabled (no DB role). `run_sql`: sqlglot
   single query, no DDL/DML/file functions, gold tables only, LIMIT ≤ 1000, 10 s, EXPLAIN estimate
-  ≤ 50M rows. The guard rejects `aov` without group-by (MetricFlow cross join). Golden answers are
-  computed from gold through the agent's tools (`agents eval build-analytics`). Judge = local Qwen
-  unless hosted.
+  ≤ 50M rows. The estimate counts an ungrouped aggregate as 1 row, so MetricFlow's cross join of
+  per-metric totals passes (overall `aov` = 160.2412) while real cross products are still rejected.
+  Golden answers are computed from gold through the agent's tools (`agents eval build-analytics`).
+  Judge = local Qwen unless hosted.
 - *Shopping assistant.* `get_recommendations` posts the chat thread id but emits no `product_view`
   events (would need `confluent-kafka[avro]` in agents), so `/recommend` serves cold-start popularity.
   `place_order` is quoted, then gated by an `interrupt`; it writes as `shop_writer` (INSERT on
   `orders`/`order_items`/`order_payments` only); orders stay `created`, `shop.stock` (seeded from
   90-day velocity) is not decremented. Untrusted review/snippet text matching injection markers is
-  withheld. The UI has no shopper identity yet (order lookups via the CLI `--customer`).
+  withheld. The UI's Shopping profile has a "Customer id" chat setting (default `DEMO_CUSTOMER_ID`);
+  the CLI takes `--customer`. Both are free text, not an authentication boundary: "own orders only" is only as
+  strong as that setting (local demo on 127.0.0.1).
 - *Evals/tracing.* Scorers are plain Python (execution match, tool selection, adversarial safety, judge
   via the `judge` alias), logged as MLflow runs in experiment `genai-evals` (metrics + per-case
   artefact), not `mlflow.genai.evaluate`. Traces: experiment `genai`, tagged prompt hash + model alias.
@@ -450,8 +455,9 @@ retail-data-platform/
   Tagged releases, `CHANGELOG.md`, images to GHCR.
 - *Amendment (Phase 6, ADR-0008).* `genai/` and `agents/` are separate uv projects like `ml/`
   (`uv run --project genai|agents …`); the gateway config is `litellm/config.yaml`, the RAG and shop
-  DDL `sql/rag.sql` / `sql/shop.sql`. GitHub runners have no Ollama, so CI runs the genai/agents
-  tests with mocked LLMs only, and the agent eval sets run against local Ollama (Airflow
+  DDL `sql/rag.sql` / `sql/shop.sql` (copied into the `retail-agents` image at `/app/sql`). GitHub
+  runners have no Ollama, so CI runs the genai/agents tests with mocked LLMs only, against a pgvector
+  service container (the same digest as Compose; a skipped Postgres test fails the job), and the agent eval sets run against local Ollama (Airflow
   `nightly_evals`, Phase 6 task 7) or by hand with `--provider hosted`, not in `nightly-evals.yml`.
 - Docs: README (diagram source committed, demo GIF, 3-command run, CV-style highlights), ADRs for
   every non-obvious choice, per-layer runbooks, `docs/interview-notes.md` (running "what broke and

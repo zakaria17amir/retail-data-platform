@@ -12,6 +12,8 @@ Phase 6 adds enrichment, hybrid RAG and two LangGraph agents on one laptop: an R
   and `judge-hosted` (anthropic/claude-haiku-4-5) are explicit: clients pick them only with `LLM_PROVIDER=hosted`
   and there are no router fallbacks, so nothing reaches a hosted model silently. Embeddings always stay local.
 - **GPU budget:** Qwen2.5-7B Q4 (~4.7 GB) and bge-m3 (~1.2 GB) do not fit 6 GB together, so Ollama swaps them.
+  `chat`/`judge` set `num_ctx: 8192` in `litellm/config.yaml`: Ollama's 2-4k default silently truncates from the
+  start of the prompt (system prompt first). Qwen at 8k is ~5.3 GB (estimate; measure with `ollama ps`).
   Batch jobs never interleave: `rag index` runs all review summaries (chat), then all embeddings (batches of 64).
   Default enrichment is **500 products**, stratified by category; the spec's 5k is ≈ 8 h at ~35 tok/s (estimate).
 - **pgvector:** Postgres → `pgvector/pgvector:0.8.6-pg16-bookworm` on the existing volume. Bookworm keeps the
@@ -41,5 +43,6 @@ Phase 6 adds enrichment, hybrid RAG and two LangGraph agents on one laptop: an R
   bias). The only result is a harness replay (60/60 reference calls reach the expected answer): not a model score.
 
 ## Consequences
-- 7B tool calling is unproven; hosted aliases allow a comparison. The cost guard rejects MetricFlow's cross join for
-  `aov` without group-by (11.2B rows), so the agent must fall back to `run_sql`. Rejected: Langfuse, router fallbacks.
+- 7B tool calling is unproven; hosted aliases allow a comparison. The cost guard counts an ungrouped aggregate as
+  1 row, so `query_metric` for `aov` without group-by passes (160.2412) and real cross products are still rejected.
+  Rejected: Langfuse, router fallbacks.

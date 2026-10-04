@@ -1,11 +1,13 @@
 # Local-first: chat/embed/judge go to Ollama on the host. The *-hosted aliases are never routed to
 # implicitly (no router fallbacks); clients select them only when LLM_PROVIDER=hosted, and a call
-# fails with an auth error while the key is unset.
+# fails with an auth error while the key is unset. num_ctx: Ollama's default window (2-4k) silently
+# truncates the prompt from the start, i.e. drops the system prompt (VRAM: docs/runbooks/genai.md).
 model_list:
   - model_name: chat
     litellm_params:
       model: ollama_chat/qwen2.5:7b-instruct
       api_base: os.environ/OLLAMA_BASE_URL
+      num_ctx: 8192
   - model_name: embed
     litellm_params:
       model: ollama/bge-m3
@@ -14,6 +16,7 @@ model_list:
     litellm_params:
       model: ollama_chat/qwen2.5:7b-instruct
       api_base: os.environ/OLLAMA_BASE_URL
+      num_ctx: 8192
   - model_name: chat-hosted
     litellm_params:
       model: openai/gpt-4.1-mini

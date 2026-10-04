@@ -610,6 +610,9 @@ def test_every_llm_task_runs_the_agents_image_in_the_llm_pool(dagbag: DagBag) ->
         assert mounts["/app/analytics/target"]["Source"] == f"{repo}/analytics/target"
         # golden sets: agents.evals.golden.DATA_DIR in the image, which ships agents/src only
         assert mounts["/app/agents/evals/data"]["Source"] == f"{repo}/agents/evals/data"
+        # rag.sql / shop.sql at /app/sql: parents[4] of genai.rag.store and agents.shopping_agent.db
+        # (also COPYed into the image by agents/Dockerfile; the mount keeps them in step)
+        assert mounts["/app/sql"]["Source"] == f"{repo}/sql"
         assert all(m["ReadOnly"] for m in t.mounts)
 
 
