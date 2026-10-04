@@ -56,7 +56,7 @@ services:
     networks: [retail]
 
   minio-init:
-    profiles: [core, ingest]
+    profiles: [core, ingest, analytics]
     image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z@sha256:cfc83108c3abb371f8fb84d99c1fdc88f8c237e022409b0081fb7c0a3be634dd
     depends_on:
       minio:
@@ -277,6 +277,7 @@ services:
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -287,6 +288,7 @@ services:
       - -euc
       - |
         : "$${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}"
+        : "$${AIRFLOW__CORE__FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}"
         python -c '
         import os, psycopg2
         c = psycopg2.connect(host="postgres", user=os.environ["POSTGRES_USER"], password=os.environ["POSTGRES_PASSWORD"], dbname=os.environ["POSTGRES_DB"])
@@ -316,8 +318,11 @@ services:
       - bash
       - -euc
       - |
-        python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
-          > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE"
+        : "$${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}"
+        : "$${AIRFLOW__CORE__FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}"
+        : "$${HOST_REPO_DIR:?set HOST_REPO_DIR in .env (PWD is not exported by this shell)}"
+        (umask 077 && python -c 'import json, os; print(json.dumps({"admin": os.environ["AIRFLOW_ADMIN_PASSWORD"]}))' \
+          > "$$AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE")
         exec airflow standalone
     environment:
       <<: *airflow-env
@@ -327,6 +332,7 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json
       # host path of the repo: DockerOperator bind mounts are resolved by the host daemon, not this container
       HOST_REPO_DIR: ${HOST_REPO_DIR:-$PWD}
+      ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:
@@ -334,7 +340,7 @@ services:
       - ./analytics:/opt/airflow/analytics
       - ./data:/opt/airflow/data
       - ./lakehouse:/opt/airflow/lakehouse
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock # root-equivalent host access; local dev only
     depends_on:
       postgres:
         condition: service_healthy

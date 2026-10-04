@@ -6,8 +6,7 @@ ARG AIRFLOW_VERSION=3.3.2
 ARG AIRFLOW_CONSTRAINTS=https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-3.12.txt
 
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
-COPY pyproject.toml uv.lock dbt-requirements.txt /tmp/orchestration/
-
+COPY pyproject.toml uv.lock /tmp/orchestration/
 RUN uv export --project /tmp/orchestration --frozen --no-dev --no-emit-project --no-hashes \
       -o /tmp/requirements.txt \
     && uv pip install --no-cache -r /tmp/requirements.txt --constraint "${AIRFLOW_CONSTRAINTS}"
@@ -16,5 +15,6 @@ RUN uv export --project /tmp/orchestration --frozen --no-dev --no-emit-project -
 USER root
 RUN mkdir /opt/dbt-venv && chown airflow:0 /opt/dbt-venv
 USER airflow
+COPY dbt-requirements.txt /tmp/orchestration/
 RUN uv venv --python /usr/python/bin/python3.12 /opt/dbt-venv \
     && VIRTUAL_ENV=/opt/dbt-venv uv pip install --no-cache -r /tmp/orchestration/dbt-requirements.txt

@@ -1426,7 +1426,7 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest" }]
+dev = [{ name = "pytest", specifier = "==9.1.1" }]
 
 [[package]]
 name = "outcome"
