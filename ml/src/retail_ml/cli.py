@@ -32,6 +32,9 @@ def _parser() -> argparse.ArgumentParser:
     score = sub.add_parser("score", help="score open orders with the champion -> gold Parquet")
     score.add_argument("model", choices=["late_delivery"])
     sub.add_parser("materialize", help="apply Feast definitions and load the online store")
+    monitor = sub.add_parser("monitor", help="drift + delayed ground truth; exit 3 on breach")
+    monitor.add_argument("model", choices=["late_delivery"])
+    monitor.add_argument("--config", type=Path, default=None)
     return parser
 
 
@@ -65,9 +68,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"rows": len(scored), "model_version": version, "path": str(out)}))
         return 0
 
+    cfg = config.load_late_delivery_config(args.config)
+    if args.command == "monitor":
+        from retail_ml.monitoring.monitor import monitor_late_delivery
+
+        return monitor_late_delivery(cfg, store, MlflowClient())
+
     from retail_ml.late_delivery.train import train
 
-    cfg = config.load_late_delivery_config(args.config)
     result = train(cfg, store, promotion_mode=args.promotion_mode or config.promotion_mode())
     print(
         json.dumps(
