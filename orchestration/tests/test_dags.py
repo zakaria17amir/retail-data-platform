@@ -1,4 +1,5 @@
 import contextlib
+import io
 import json
 import logging
 import os
@@ -24,17 +25,22 @@ TI = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
 
 
 @pytest.fixture(scope="module")
-def dagbag() -> DagBag:
+def manifest() -> Path:
     if not Path("/opt/airflow/analytics").exists():
         os.environ.setdefault("DBT_PROJECT_DIR", str(DAGS_DIR.parents[1] / "analytics"))
-    os.environ.setdefault("HOST_REPO_DIR", "/repo")
-    manifest = Path(os.environ.get("DBT_PROJECT_DIR", "/opt/airflow/analytics"))
-    manifest /= "target/manifest.json"
-    if not manifest.exists():
-        msg = f"{manifest} missing: run `make dbt-parse` first"
+    path = Path(os.environ.get("DBT_PROJECT_DIR", "/opt/airflow/analytics"))
+    path /= "target/manifest.json"
+    if not path.exists():
+        msg = f"{path} missing: run `make dbt-parse` first"
         if os.environ.get("CI"):
             pytest.fail(msg)
         pytest.skip(msg)
+    return path
+
+
+@pytest.fixture(scope="module")
+def dagbag(manifest: Path) -> DagBag:
+    os.environ.setdefault("HOST_REPO_DIR", "/repo")
     return DagBag(dag_folder=str(DAGS_DIR))
 
 
@@ -73,6 +79,65 @@ def test_gold_daily_runs_multi_parent_tests_after_all_parents(dagbag: DagBag) ->
     dag = dagbag.dags["gold_daily"]
     (test,) = [t for t in dag.tasks if "assert_fct_orders_count_matches_stg_orders" in t.task_id]
     assert {"dbt.fct_orders.run", "dbt.stg_orders.run"} <= test.get_flat_relative_ids(upstream=True)
+
+
+def test_gold_daily_gates_everything_on_should_build(dagbag: DagBag) -> None:
+    dag = dagbag.dags["gold_daily"]
+    gate = dag.get_task("should_build")
+    assert [t.task_id for t in dag.roots] == ["should_build"]
+    assert gate.get_flat_relative_ids(upstream=False) == set(dag.task_ids) - {"should_build"}
+
+
+def test_gold_is_due() -> None:
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+    assert common.gold_is_due(None, now, 20)
+    assert common.gold_is_due(now - timedelta(hours=20), now, 20)
+    assert not common.gold_is_due(now - timedelta(hours=19), now, 20)
+    assert common.gold_is_due(now - timedelta(minutes=1), now, 0)
+
+
+def test_last_success_end_queries_rest_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[Any] = []
+    replies = [
+        {"access_token": "tok"},
+        {"dag_runs": [{"end_date": "2026-10-04T04:02:31.782625Z"}], "total_entries": 1},
+        {"dag_runs": [], "total_entries": 0},
+    ]
+
+    def urlopen(req: Any, timeout: float) -> Any:
+        sent.append(req)
+        return contextlib.nullcontext(io.BytesIO(json.dumps(replies.pop(0)).encode()))
+
+    monkeypatch.setenv("AIRFLOW_ADMIN_PASSWORD", "pw")
+    monkeypatch.setattr(common.urllib.request, "urlopen", urlopen)
+    end = common.last_success_end("gold_daily")
+    assert end == datetime(2026, 10, 4, 4, 2, 31, 782625, tzinfo=UTC)
+    login, runs = sent
+    assert login.full_url == "http://localhost:8080/auth/token"
+    assert json.loads(login.data) == {"username": "admin", "password": "pw"}
+    assert runs.full_url == (
+        "http://localhost:8080/api/v2/dags/gold_daily/dagRuns"
+        "?state=success&order_by=-end_date&limit=1"
+    )
+    assert runs.get_header("Authorization") == "Bearer tok"
+    replies.insert(0, {"access_token": "tok"})
+    assert common.last_success_end("gold_daily") is None
+
+
+REFERENCE_SOURCES = ("categories", "products", "sellers", "geolocation_points")
+
+
+def test_sources_never_error_on_freshness(manifest: Path) -> None:
+    # read at test time: `make dbt-parse` regenerates the manifest from analytics/
+    sources = json.loads(manifest.read_text())["sources"]
+
+    def count(name: str, key: str) -> Any:
+        return ((sources[name].get("freshness") or {}).get(key) or {}).get("count")
+
+    for name in REFERENCE_SOURCES:
+        assert count(f"source.retail.silver.{name}", "warn_after") is None, name
+    for name in sources:
+        assert count(name, "error_after") is None, name
 
 
 def test_silver_hourly_publishes_silver(dagbag: DagBag) -> None:

@@ -37,6 +37,31 @@ def on_failure(context: Context) -> None:
         log.exception("failure alert not sent")
 
 
+def gold_is_due(last_end: datetime | None, now: datetime, min_hours: float) -> bool:
+    return min_hours <= 0 or last_end is None or now - last_end >= timedelta(hours=min_hours)
+
+
+def last_success_end(dag_id: str, api: str = "http://localhost:8080") -> datetime | None:
+    # asset-triggered runs have no logical_date, so the Task SDK's get_previous_dagrun and
+    # prev_end_date_success are always None; ask the REST API (served in this container) instead
+    login = urllib.request.Request(
+        f"{api}/auth/token",
+        data=json.dumps(
+            {"username": "admin", "password": os.environ["AIRFLOW_ADMIN_PASSWORD"]}
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(login, timeout=10) as resp:
+        token = json.load(resp)["access_token"]
+    runs = urllib.request.Request(
+        f"{api}/api/v2/dags/{dag_id}/dagRuns?state=success&order_by=-end_date&limit=1",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    with urllib.request.urlopen(runs, timeout=10) as resp:
+        found = json.load(resp)["dag_runs"]
+    return datetime.fromisoformat(found[0]["end_date"]) if found else None
+
+
 default_args: dict[str, Any] = {
     "owner": "data-platform",
     "retries": 2,

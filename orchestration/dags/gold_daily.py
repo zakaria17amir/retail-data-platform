@@ -1,13 +1,27 @@
+import logging
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 
 from airflow.providers.standard.operators.empty import EmptyOperator
-from airflow.sdk import DAG
-from common import GOLD, SILVER, START, default_args
+from airflow.sdk import DAG, task
+from common import GOLD, SILVER, START, default_args, gold_is_due, last_success_end
 from cosmos import DbtTaskGroup, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import InvocationMode, LoadMode, SourceRenderingBehavior
 
 PROJECT = Path(os.environ.get("DBT_PROJECT_DIR", "/opt/airflow/analytics"))
+log = logging.getLogger(__name__)
+
+
+# silver publishes hourly even when nothing changed; a gold build holds the DuckDB writer ~20 min
+@task.short_circuit
+def should_build() -> bool:
+    hours = float(os.environ.get("GOLD_MIN_INTERVAL_HOURS", "20"))
+    last = None if hours <= 0 else last_success_end("gold_daily")
+    due = gold_is_due(last, datetime.now(UTC), hours)
+    log.info("last successful gold_daily ended %s; min interval %sh; build=%s", last, hours, due)
+    return due
+
 
 with DAG(
     "gold_daily",
@@ -44,4 +58,4 @@ with DAG(
             should_detach_multiple_parents_tests=True,
         ),
     )
-    dbt >> EmptyOperator(task_id="publish_gold", outlets=[GOLD])
+    should_build() >> dbt >> EmptyOperator(task_id="publish_gold", outlets=[GOLD])
