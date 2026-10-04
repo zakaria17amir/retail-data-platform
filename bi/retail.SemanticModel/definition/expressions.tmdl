@@ -1,0 +1,3 @@
+expression GoldFolder = "E:\Data Engineer and Analytics\retail-data-platform\data\gold" meta [IsParameterQuery=true, Type="Text", IsParameterQueryRequired=true]
+
+	annotation PBI_ResultType = Text

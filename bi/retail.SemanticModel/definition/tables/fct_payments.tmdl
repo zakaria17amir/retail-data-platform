@@ -1,0 +1,34 @@
+table fct_payments
+
+	column order_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column payment_sequential
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: payment_sequential
+
+	column payment_type
+		dataType: string
+		summarizeBy: none
+		sourceColumn: payment_type
+
+	column payment_installments
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: payment_installments
+
+	column payment_value
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: payment_value
+
+	partition fct_payments = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_payments.parquet"))
+				in
+				    Source

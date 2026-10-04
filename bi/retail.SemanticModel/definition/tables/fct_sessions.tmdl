@@ -1,0 +1,98 @@
+table fct_sessions
+
+	measure Sessions =
+			// dbt metric: sessions (analytics/models/metrics/)
+			COUNTROWS(fct_sessions)
+		formatString: #,##0
+
+	measure 'Checkout Sessions' =
+			// dbt metric: checkout_sessions (analytics/models/metrics/)
+			CALCULATE(
+				COUNTROWS(fct_sessions),
+				KEEPFILTERS(fct_sessions[has_checkout] = TRUE())
+			)
+		formatString: #,##0
+
+	measure 'Conversion Rate' =
+			// dbt metric: conversion_rate (analytics/models/metrics/)
+			DIVIDE([Checkout Sessions], [Sessions])
+		formatString: 0.00%
+
+	column session_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: session_id
+
+	column session_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: session_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column session_start_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: session_start_ts_utc
+
+	column session_end_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: session_end_ts_utc
+
+	column event_count
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: event_count
+
+	column page_view_count
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: page_view_count
+
+	column search_count
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: search_count
+
+	column product_view_count
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: product_view_count
+
+	column add_to_cart_count
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: add_to_cart_count
+
+	column checkout_started_count
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: checkout_started_count
+
+	column has_checkout
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: has_checkout
+
+	column customer_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_id
+
+	column order_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: order_id
+
+	partition fct_sessions = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_sessions.parquet")),
+				    NonNullRows = Table.SelectRows(Source, each [session_id] <> null)
+				in
+				    NonNullRows

@@ -1,0 +1,52 @@
+table rpt_product_performance
+
+	column product_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_id
+
+	column order_month
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: order_month
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column units
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: units
+
+	column revenue
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: revenue
+
+	column avg_review_score
+		dataType: double
+		summarizeBy: none
+		sourceColumn: avg_review_score
+
+	column delivered_orders
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: delivered_orders
+
+	column late_orders
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: late_orders
+
+	column late_rate
+		dataType: double
+		summarizeBy: none
+		sourceColumn: late_rate
+
+	partition rpt_product_performance = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_product_performance.parquet"))
+				in
+				    Source

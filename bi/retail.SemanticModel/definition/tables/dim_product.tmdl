@@ -1,0 +1,91 @@
+table dim_product
+
+	column product_sk
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_sk
+
+	column product_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_id
+
+	column product_category_name
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_category_name
+
+	column product_category_name_english
+		dataType: string
+		summarizeBy: none
+		sourceColumn: product_category_name_english
+
+	column product_name_length
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_name_length
+
+	column product_description_length
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_description_length
+
+	column product_photos_qty
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_photos_qty
+
+	column product_weight_g
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_weight_g
+
+	column product_length_cm
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_length_cm
+
+	column product_height_cm
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_height_cm
+
+	column product_width_cm
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: product_width_cm
+
+	column valid_from
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: valid_from
+
+	column valid_to
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: valid_to
+
+	column is_current
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_current
+
+	column is_deleted
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_deleted
+
+	column is_first_version
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_first_version
+
+	partition dim_product = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\dim_product.parquet"))
+				in
+				    Source

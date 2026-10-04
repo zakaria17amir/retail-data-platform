@@ -1,0 +1,55 @@
+table dim_date
+
+	column date_day
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: date_day
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column calendar_year
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: calendar_year
+
+	column calendar_quarter
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: calendar_quarter
+
+	column calendar_month
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: calendar_month
+
+	column day_of_month
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: day_of_month
+
+	column iso_day_of_week
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: iso_day_of_week
+
+	column is_weekend
+		dataType: boolean
+		summarizeBy: none
+		sourceColumn: is_weekend
+
+	column month_start_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: month_start_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	partition dim_date = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\dim_date.parquet"))
+				in
+				    Source

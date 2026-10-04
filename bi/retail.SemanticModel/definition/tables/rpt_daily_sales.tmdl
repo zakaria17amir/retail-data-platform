@@ -1,0 +1,37 @@
+table rpt_daily_sales
+
+	column order_purchase_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: order_purchase_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column customer_state
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_state
+
+	column orders
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: orders
+
+	column revenue
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: revenue
+
+	column aov
+		dataType: double
+		summarizeBy: none
+		sourceColumn: aov
+
+	partition rpt_daily_sales = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_daily_sales.parquet"))
+				in
+				    Source

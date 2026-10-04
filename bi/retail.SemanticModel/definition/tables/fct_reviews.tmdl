@@ -1,0 +1,49 @@
+table fct_reviews
+
+	column review_pk
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: review_pk
+
+	column review_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: review_id
+
+	column order_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: order_id
+
+	column review_score
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: review_score
+
+	column review_creation_date
+		dataType: dateTime
+		formatString: yyyy-mm-dd
+		summarizeBy: none
+		sourceColumn: review_creation_date
+
+		annotation UnderlyingDateTimeDataType = Date
+
+	column review_creation_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: review_creation_ts_utc
+
+	column review_answer_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: review_answer_ts_utc
+
+	partition fct_reviews = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\fct_reviews.parquet"))
+				in
+				    Source

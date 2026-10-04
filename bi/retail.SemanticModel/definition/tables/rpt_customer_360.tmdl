@@ -1,0 +1,66 @@
+table rpt_customer_360
+
+	column customer_unique_id
+		dataType: string
+		summarizeBy: none
+		sourceColumn: customer_unique_id
+
+	column orders
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: orders
+
+	column first_order_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: first_order_ts_utc
+
+	column last_order_ts_utc
+		dataType: dateTime
+		formatString: General Date
+		summarizeBy: none
+		sourceColumn: last_order_ts_utc
+
+	column frequency
+		dataType: double
+		summarizeBy: sum
+		sourceColumn: frequency
+
+	column monetary
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: monetary
+
+	column ltv
+		dataType: decimal
+		summarizeBy: sum
+		sourceColumn: ltv
+
+	column recency_days
+		dataType: int64
+		summarizeBy: sum
+		sourceColumn: recency_days
+
+	column recency_score
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: recency_score
+
+	column frequency_score
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: frequency_score
+
+	column monetary_score
+		dataType: int64
+		summarizeBy: none
+		sourceColumn: monetary_score
+
+	partition rpt_customer_360 = m
+		mode: import
+		source =
+				let
+				    Source = Parquet.Document(File.Contents(GoldFolder & "\rpt_customer_360.parquet"))
+				in
+				    Source
