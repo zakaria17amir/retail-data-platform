@@ -61,10 +61,13 @@ models:
   - name: ml_demand_daily
     description: >
       Daily distinct revenue orders per product_category x customer_state (an order counts once
-      per category it contains), zero-filled per series from its first order date to the last
-      revenue-order date E. Cutoff C = E - (ml_demand_test_days - 1) is the first day of the
-      forecast test window (last 28 days). is_modelled = the series has >= 1 order on at least
-      50 % of the ml_demand_window_days (180) days in [C - 180, C).
+      per category it contains), zero-filled per series from its first order date to E. E is the
+      last day before the truncated tail: the last date whose total distinct revenue orders are
+      >= ml_demand_min_ratio (0.2) x the mean of the previous ml_demand_trailing_days (28) days
+      (gap-filled with zeros, mean > 0); nothing after E is emitted. Cutoff C = E -
+      (ml_demand_test_days - 1) is the first day of the forecast test window (last 28 days).
+      is_modelled = the series has >= 1 order on at least 50 % of the ml_demand_window_days (180)
+      days in [C - 180, C).
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
@@ -243,3 +246,61 @@ unit_tests:
         - {date: "2018-01-06", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
         - {date: "2018-01-07", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
         - {date: "2018-01-08", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
+
+  - name: ml_demand_daily_end_before_truncated_tail
+    description: >
+      Trailing mean over 4 days. 10 orders/day on 01-01..01-04; ramp-down 2 on 01-05 (= 20 % of
+      the mean 10, kept); 0 on 01-06; a stray order on 01-07 (mean 5.5, 1 < 1.1). E = 01-05: no rows
+      after it, and series b whose only order is the stray emits nothing. C = 01-04, window
+      [12-31, 01-04) has 3 of 4 active days -> modelled.
+    model: ml_demand_daily
+    overrides:
+      vars:
+        ml_demand_window_days: 4
+        ml_demand_test_days: 2
+        ml_demand_trailing_days: 4
+    given:
+      - input: ref('fct_order_items')
+        format: sql
+        rows: |
+          select
+              'n' || d || '_' || i as order_id,
+              'p_a' as product_sk,
+              cast(date '2018-01-01' + cast(d as integer) as date) as order_purchase_date,
+              true as is_revenue_order
+          from range(4) as t (d), range(10) as u (i)
+          union all select 'r1', 'p_a', date '2018-01-05', true
+          union all select 'r2', 'p_a', date '2018-01-05', true
+          union all select 's1', 'p_b', date '2018-01-07', true
+      - input: ref('dim_product')
+        rows:
+          - {product_sk: p_a, product_category_name_english: a}
+          - {product_sk: p_b, product_category_name_english: b}
+      - input: ref('fct_orders')
+        format: sql
+        rows: |
+          select 'n' || d || '_' || i as order_id, 'c_sp' as customer_sk
+          from range(4) as t (d), range(10) as u (i)
+          union all select 'r1', 'c_sp'
+          union all select 'r2', 'c_sp'
+          union all select 's1', 'c_sp'
+      - input: ref('dim_customer')
+        rows:
+          - {customer_sk: c_sp, customer_state: SP}
+      - input: ref('dim_date')
+        rows:
+          - {date_day: "2018-01-01"}
+          - {date_day: "2018-01-02"}
+          - {date_day: "2018-01-03"}
+          - {date_day: "2018-01-04"}
+          - {date_day: "2018-01-05"}
+          - {date_day: "2018-01-06"}
+          - {date_day: "2018-01-07"}
+          - {date_day: "2018-01-08"}
+    expect:
+      rows:
+        - {date: "2018-01-01", product_category: a, customer_state: SP, orders: 10, is_modelled: true}
+        - {date: "2018-01-02", product_category: a, customer_state: SP, orders: 10, is_modelled: true}
+        - {date: "2018-01-03", product_category: a, customer_state: SP, orders: 10, is_modelled: true}
+        - {date: "2018-01-04", product_category: a, customer_state: SP, orders: 10, is_modelled: true}
+        - {date: "2018-01-05", product_category: a, customer_state: SP, orders: 2, is_modelled: true}

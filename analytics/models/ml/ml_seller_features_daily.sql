@@ -68,7 +68,8 @@ windowed as (
 
 select
     seller_id,
-    cast(date_day as timestamp with time zone) as feature_ts,
+    -- explicit +00:00 offset: midnight UTC whatever the session time zone
+    cast(cast(date_day as varchar) || ' 00:00:00+00:00' as timestamp with time zone) as feature_ts,
     seller_orders_90d,
     n_late * 1.0 / nullif(seller_orders_90d, 0) as seller_late_rate_90d,
     delivery_days / nullif(seller_orders_90d, 0) as seller_avg_delivery_days_90d,
