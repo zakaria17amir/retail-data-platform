@@ -117,6 +117,13 @@ lateness changed between windows, which is why test calibration is off.
 
 ## 2. demand_forecast v1 (LightGBM) — test window 2018-07-31 → 2018-08-27
 
+Everything in this section is the cycle-1 window (dbt tail cut 0.2, E = 2018-08-27); the notebook
+has not been re-run on the current data. Current data (tail cut 0.5, E = 2018-08-23, test
+2018-07-27 → 2018-08-23, 61 series, 4,591 test series-orders; computed from the registry models):
+test WAPE naive 0.6349, v1 champion 0.5352, v2 challenger 0.5438; top-10 series naive 0.4004, v1
+0.4184, v2 0.4317; bias naive 0.9122, v1 0.7041, v2 0.6931; LightGBM (v1 and v2) loses to naive on
+11 of 61 series (39.75 % of test orders), 6 of them in the top 10. Horizon-week WAPE below.
+
 62 modelled series, 4,335 test series-orders. Test WAPE LightGBM 0.5704 vs seasonal naive 0.6604
 (MLflow). Bias (sum forecast / sum actual): LightGBM 0.7467, naive 0.9190, so LightGBM under-forecasts
 the level. Per-series table for all 62 series: `tables/demand_test_per_series.csv`.
@@ -179,18 +186,19 @@ Losers by state: SP 4 of 24, RJ 2 of 13, MG 3 of 11, PR 2 of 7, RS 2 of 6, BA 0 
 | Q3 | 15 | 904 | 0.7633 | 0.6349 |
 | Q4 high | 16 | 2597 | 0.5094 | 0.4515 |
 
-| horizon week | WAPE naive | WAPE LightGBM |
-|---|---|---|
-| 1 | 0.5385 | 0.5215 |
-| 2 | 0.6007 | 0.5329 |
-| 3 | 0.6176 | 0.5486 |
-| 4 | 1.1068 | 0.7829 |
+| horizon week | WAPE naive | WAPE LightGBM v1 | current: naive | current: v1 | current: v2 |
+|---|---|---|---|---|---|
+| 1 | 0.5385 | 0.5215 | 0.6233 | 0.5194 | 0.5473 |
+| 2 | 0.6007 | 0.5329 | 0.5993 | 0.5319 | 0.5361 |
+| 3 | 0.6176 | 0.5486 | 0.6274 | 0.5249 | 0.5277 |
+| 4 | 1.1068 | 0.7829 | 0.7055 | 0.5691 | 0.5691 |
 
 **Week 4 is distorted by the extract tail.** Daily actuals (all 62 series,
 `tables/demand_test_daily_totals.csv`) fall from 170 on 2018-08-21 to 70, 55, 56, 56 on
 2018-08-24…27, while the contract's approved-order counts per purchase day (late-delivery contract)
 are 107, 67, 68, 70 on those days, then 45 and 16. The dbt truncated-tail rule (keep days with orders
 ≥ 0.2 × trailing 28-day mean) keeps these ramp-down days inside the test window. Both models'
-week-4 WAPE, and part of the test WAPE, reflect extract truncation rather than demand. Raising
-`ml_demand_min_ratio` (analytics-owned dbt var) would cut the test window before the ramp-down; this
-is reported to the lead rather than changed here.
+week-4 WAPE, and part of the test WAPE, reflect extract truncation rather than demand.
+`ml_demand_min_ratio` is now 0.5: E moved to 2018-08-23 and current week-4 WAPE is 0.7055 (naive) /
+0.5691 (LightGBM), still above weeks 1–3; E itself has 100 orders across the modelled series vs
+129–169 on the four days before.

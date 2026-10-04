@@ -4,8 +4,8 @@ All metric values come from the MLflow tracking server (`http://127.0.0.1:5000`,
 `late_delivery` and `demand_forecast`), rounded to 4 dp. Deltas are differences between those logged
 values. Numbers marked *(nb01)* / *(nb02)* were computed by `ds/notebooks/01_late_delivery_eda.ipynb`
 / `02_demand_eda.ipynb` from the registry champion; the CSVs are in `ds/reports/tables/`.
-Only one training cycle per model has been logged so far (v1), so "iterations" means baseline → model
-within that cycle.
+late_delivery has one training cycle (v1), so "iterations" means baseline → model within it;
+demand_forecast has two (v1, then v2 after the dbt tail cut changed).
 
 ## late_delivery (binary, P(delivered after the estimated date) at approval)
 
@@ -63,6 +63,8 @@ Decisions:
 
 ## demand_forecast (daily orders per product_category × customer_state, 28-day horizon)
 
+### Cycle 1 — tail cut at 0.2 × trailing mean (v1)
+
 Data: `data/gold/ml/demand_daily.parquet`, sha256 `f3c685717dff…66a7a4`, code `dddbd7d`. 62 modelled series
 of 1,382 (1,320 excluded as sparse); series end at E = 2018-08-27. Test window 2018-07-31 →
 2018-08-27; rolling-origin backtest folds start 2018-05-08, 2018-06-05, 2018-07-03 (28 days each).
@@ -90,3 +92,33 @@ Decisions:
 5. **Not done (candidates for v2):** level/bias correction (LightGBM under-forecasts the test window,
    sum forecast / sum actual = 0.7467 vs naive 0.9190 *(nb02)*), a stricter truncated-tail rule
    (see error analysis), prediction intervals.
+
+### Cycle 2 — tail cut at 0.5 × trailing mean (v2)
+
+Data change only (same code/config): dbt `ml_demand_min_ratio` 0.2 → 0.5, because the cycle-1 test
+window ended in the extract's ramp-down (2018-08-24…27 at 70/55/56/56 orders/day). Data
+`demand_daily.parquet` sha256 `bc78232b2606…26a51d0`, code `b64c4f8`. E = 2018-08-23, test window
+2018-07-27 → 2018-08-23, folds start 2018-05-04, 2018-06-01, 2018-06-29. 61 modelled series of
+1,382 (baby × RJ and musical_instruments × SP out, toys × RJ in).
+
+| # | run (MLflow run id) | fold 1 | fold 2 | fold 3 | backtest mean | test | test top-10 series |
+|---|---|---|---|---|---|---|---|
+| 2 | `seasonal_naive` (18c39efc…) | 0.7766 | 0.6756 | 0.8044 | 0.7522 | 0.6349 | 0.4004 |
+| 3 | `lightgbm` (b296acbb…) → **v2, challenger** | 0.5946 | 0.5533 | 0.6278 | 0.5919 | 0.5438 | 0.4317 |
+| | delta | −0.1820 | −0.1223 | −0.1766 | **−0.1603 (−21.3 %)** | **−0.0911 (−14.4 %)** | **+0.0313 (+7.8 %)** (worse) |
+| | v1 champion re-scored on this test window | – | – | – | – | 0.5352 | 0.4184 |
+
+Decisions:
+
+1. **v2 not promoted** (`wape 0.5438 >= champion v1 0.5352`). The gate re-scores the champion on
+   the challenger's window, so it compares like with like; but v1 was fit on data before
+   2018-07-31, so 07-27…07-30 are in-sample for it. On 07-31 → 08-23 (out of sample for both) v1
+   still wins: 0.5365 vs 0.5414 (naive 0.6250). The extra four recent days of history v1 trained on
+   are a legitimate edge, so v1 stays champion; `forecast demand` wrote 3,416 rows (61 series × 56
+   days) with `model_version` 1.
+2. **The tail cut removed most of the week-4 distortion**: horizon-week WAPE naive 0.6233 / 0.5993 /
+   0.6274 / 0.7055, v2 0.5473 / 0.5361 / 0.5277 / 0.5691 (cycle 1 week 4: 1.1068 / 0.7829).
+3. **LightGBM's edge is now in the long tail only.** On the top-10 series naive is better (0.4004 vs
+   v1 0.4184 / v2 0.4317); both LightGBM versions lose to naive on 11 of 61 series holding 39.75 %
+   of test orders (cycle 1: 13 of 62, 19.45 %), including 6 of the top 10. Level/bias correction
+   (bias v1 0.7041, v2 0.6931, naive 0.9122) is the next candidate.

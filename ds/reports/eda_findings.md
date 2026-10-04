@@ -31,9 +31,10 @@ reversed); see `error_analysis.md`.
 
 ## Demand
 
-- **Coverage.** 1,382 category × state series from 2016-09-04 to 2018-08-27; 62 modelled
-  (≥ 1 order on ≥ 50 % of the 180 days before the test cutoff), holding 59.96 % of series-orders
-  (61.68 % inside the 180-day window).
+- **Coverage.** 1,382 category × state series from 2016-09-04 to 2018-08-23; 61 modelled
+  (≥ 1 order on ≥ 50 % of the 180 days before the test cutoff), holding 59.86 % of series-orders
+  (61.35 % inside the 180-day window). The notebook run (E = 2018-08-27, before the 0.5 tail cut)
+  had 62, 59.96 % / 61.68 %; the sparsity medians below are from that run.
 - **Sparsity.** In the 180-day window the modelled series have a median of 1.44 orders/day and are
   active on a median 71.9 % of days; excluded series have a median of 0.017 orders/day and 1.7 % active
   days. That gap is why the long tail is not forecast.
@@ -43,4 +44,5 @@ reversed); see `error_analysis.md`.
   has only day-of-week, month and day-of-month as calendar features.
 - **Truncated tail.** The extract runs out after late August 2018: approved orders per purchase day
   drop from 204 (2018-08-22) to 67–70 (08-25…27), 45, 16, and one order in September. dbt ends the
-  demand series at E = 2018-08-27, but the ramp-down days before E are kept (see error analysis).
+  demand series at E = 2018-08-23, the last day with ≥ 0.5 × the trailing 28-day mean (the earlier
+  0.2 cut kept the ramp-down days 08-24…27; see error analysis).

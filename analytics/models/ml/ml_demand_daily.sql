@@ -1,6 +1,6 @@
 {%- set window_days = var('ml_demand_window_days', 180) -%}
 {%- set test_days = var('ml_demand_test_days', 28) -%}
-{%- set min_ratio = var('ml_demand_min_ratio', 0.2) -%}
+{%- set min_ratio = var('ml_demand_min_ratio', 0.5) -%}
 {%- set trailing_days = var('ml_demand_trailing_days', 28) -%}
 
 with
