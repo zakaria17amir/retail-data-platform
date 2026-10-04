@@ -333,6 +333,15 @@ services:
       # host path of the repo: DockerOperator bind mounts are resolved by the host daemon, not this container
       HOST_REPO_DIR: ${HOST_REPO_DIR:-$PWD}
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      LAKEHOUSE_BUCKET: ${LAKEHOUSE_BUCKET}
+      MINIO_ENDPOINT: http://minio:9000
+      KAFKA_CONNECT_URL: http://kafka-connect:8083
+      BRONZE_FRESHNESS_HOURS: ${BRONZE_FRESHNESS_HOURS:-24}
+      # absolute: Cosmos runs dbt from a temp copy of the project, so the ../data defaults would break
+      DUCKDB_PATH: /opt/airflow/data/warehouse/retail.duckdb
+      GOLD_DIR: /opt/airflow/data/gold
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8088}:8080"
     volumes:
