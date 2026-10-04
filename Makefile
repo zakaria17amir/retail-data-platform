@@ -109,4 +109,4 @@ ml-build:
 	docker compose --profile ml build serving
 
 ml:
-	docker compose --profile ml run --rm serving retail-ml $(ARGS)
+	docker compose --profile ml run --rm ml-cli $(ARGS)

@@ -478,11 +478,13 @@ services:
     # image ENTRYPOINT is retail-ml (for DockerOperator); reset so `run serving retail-ml …` and uvicorn both work
     entrypoint: []
     command: ["uvicorn", "retail_ml.serving.app:app", "--host", "0.0.0.0", "--port", "8000"]
-    environment:
+    environment: &ml-env
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://redis:6379/0
       FEAST_REPO_PATH: /feature_repo
+      FEAST_REGISTRY_PATH: /data/feast/registry.db
       GOLD_DIR: /data/gold
+      PROMOTION_MODE: ${PROMOTION_MODE:-auto}
     ports:
       - "127.0.0.1:${SERVING_PORT:-8000}:8000"
     volumes:
@@ -504,6 +506,38 @@ services:
       resources:
         limits:
           memory: 1g
+    networks: [retail]
+
+  ml-cli:
+    profiles: [ml]
+    build: ml
+    image: retail-ml
+    # one-off batch commands only (`make ml ARGS=…`): scale 0 keeps `up` from starting it, `run` still works
+    scale: 0
+    entrypoint: ["retail-ml"]
+    environment:
+      <<: *ml-env
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_DEFAULT_REGION: us-east-1
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    volumes:
+      - ./data:/data
+      - ./ml/feature_repo:/feature_repo
+    depends_on:
+      mlflow:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 2g
     networks: [retail]
 
   prometheus:
