@@ -7,18 +7,23 @@ from langgraph.types import Command
 from shop_fakes import P1, P2, SESSION, FakeSearch, FakeShop, fake_enrichment, recommend_client
 
 from agents.shopping_agent.graph import build_graph
-from agents.shopping_agent.tools import build_registry
+from agents.shopping_agent.tools import Quote, build_registry
 
 ORDER = {"items": [{"product_id": P1, "quantity": 1}]}
 
 
-def graph(shop: FakeShop, *replies: Any, search: FakeSearch | None = None) -> Any:
+def graph(
+    shop: FakeShop,
+    *replies: Any,
+    search: FakeSearch | None = None,
+    recommended: list[dict[str, Any]] | None = None,
+) -> Any:
     registry = build_registry(
         shop,
         SESSION,
         search=search or FakeSearch(),
         enrichment=fake_enrichment,
-        http=recommend_client([]),
+        http=recommend_client([] if recommended is None else recommended),
     )
     llm = fake_llm(*replies)
     return build_graph(llm, registry, checkpointer=InMemorySaver()), llm
@@ -94,6 +99,62 @@ def test_place_order_approve_inserts_once() -> None:
     order_id = shop.inserted[0][0]
     assert out["runs"][-1]["output"]["order_id"] == order_id
     assert order_id in str(llm.seen[-1][-1].content)
+
+
+def test_the_approved_quote_is_what_gets_ordered_when_the_price_changes() -> None:
+    shop = FakeShop()
+    g, _ = graph(shop, call("place_order", ORDER), "Done.")
+    approved = g.invoke({"question": "Buy the blanket"}, config())["__interrupt__"][0].value
+    shop.rows[P1] = shop.rows[P1].model_copy(update={"price": 99.0, "freight": 1.0})
+    out = g.invoke(Command(resume={"approved": True}), config())
+    ((_, inserted),) = shop.inserted
+    assert inserted == Quote.model_validate(approved["quote"])
+    assert inserted.total == 60.0 and inserted.lines[0].unit_price == 49.9
+    assert out["runs"][-1]["output"]["total"] == 60.0
+
+
+def test_stock_gone_after_approval_aborts_without_inserting() -> None:
+    shop = FakeShop()
+    g, llm = graph(shop, call("place_order", ORDER), "Sorry, it sold out.")
+    g.invoke({"question": "Buy the blanket"}, config())
+    shop.on_hand[P1] = 0
+    out = g.invoke(Command(resume={"approved": True}), config())
+    assert shop.inserted == []
+    assert "nothing was placed" in out["runs"][-1]["error"]
+    assert "nothing was placed" in str(llm.seen[-1][-1].content)
+
+
+def test_sibling_tool_calls_do_not_rerun_on_resume() -> None:
+    recommended: list[dict[str, Any]] = []
+    both = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "get_recommendations", "args": {"k": 2}, "id": "c1"},
+            {"name": "place_order", "args": ORDER, "id": "c2"},
+        ],
+    )
+    g, llm = graph(FakeShop(), both, "Done.", recommended=recommended)
+    g.invoke({"question": "Recommend something and buy the blanket"}, config())
+    assert len(recommended) == 1
+    out = g.invoke(Command(resume={"approved": True}), config())
+    assert len(recommended) == 1
+    assert [r["name"] for r in out["runs"]] == ["get_recommendations", "quote_order", "place_order"]
+    answered = {m.tool_call_id for m in llm.seen[-1] if m.type == "tool"}
+    assert answered == {"c1", "c2"}
+
+
+def test_each_turn_starts_with_fresh_runs_and_steps() -> None:
+    g, _ = graph(
+        FakeShop(),
+        call("search_products", {"query": "blanket"}),
+        f"The Plush Throw Blanket ({P1}) costs R$ 49.90.",
+        f"Sure, product {'f' * 32} is great.",
+    )
+    g.invoke({"question": "blanket?"}, config())
+    out = g.invoke({"question": "anything else?"}, config())
+    assert out["runs"] == []
+    assert out["steps"] == ["guard_input", "agent", "answer"]
+    assert "could not verify" in out["answer"] and "Plush" not in out["answer"]
 
 
 def test_unquotable_order_is_fed_back_without_interrupt() -> None:

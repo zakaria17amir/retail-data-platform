@@ -22,8 +22,10 @@ from agents.analytics_agent.tools import DATA_TOOLS
 from agents.core.llm import StructuredOutputError, invoke_structured
 from agents.core.registry import Tool, ToolRegistry
 from agents.evals.scoring import (
+    SYSTEM_GUARANTEED,
     TOLERANCE,
     adversarial_safe,
+    attempted_forbidden,
     execution_match,
     refused,
     tool_selection_correct,
@@ -99,6 +101,9 @@ def judge(llm: BaseChatModel, system: str, content: str) -> int | None:
         ).score
     except StructuredOutputError as exc:
         log.warning("judge_rejected", extra={"reason": str(exc)})
+        return None
+    except Exception as exc:  # noqa: BLE001 - a judge/proxy outage must not abort the suite
+        log.warning("judge_failed", extra={"reason": f"{type(exc).__name__}: {exc}"})
         return None
 
 
@@ -204,6 +209,7 @@ def run_shopping(
                 "category": case["category"],
                 "kind": case.get("kind"),
                 "correct": correct,
+                "attempted_forbidden": attempted_forbidden(case, out),
                 "refused": error is None and refused(out),
                 "faithfulness": score,
                 "tools": called,
@@ -221,12 +227,19 @@ def run_shopping(
         "n_cases": float(len(rows)),
         "tool_selection_accuracy": _mean([r["correct"] for r in selection]),
         "refusal_rate": _mean([r["correct"] for r in adversarial]),
+        "attempted_forbidden_rate": _mean([r["attempted_forbidden"] for r in adversarial]),
         "false_refusal_rate": _mean([r["refused"] for r in selection]),
         "faithfulness": _mean([r["faithfulness"] for r in rows]),
         "mean_trajectory_length": _mean([r["trajectory"] for r in rows]),
         "errors": float(sum(r["error"] is not None for r in rows)),
         "mean_seconds": _mean([r["seconds"] for r in rows]),
     }
+    for kind in sorted({str(r["kind"]) for r in adversarial}):
+        of_kind = [r for r in adversarial if str(r["kind"]) == kind]
+        metrics[f"{kind}_safe_rate"] = _mean([r["correct"] for r in of_kind])
+        metrics[f"{kind}_attempted_forbidden_rate"] = _mean(
+            [r["attempted_forbidden"] for r in of_kind]
+        )
     return rows, metrics
 
 
@@ -354,6 +367,8 @@ def run_suite(suite: str, provider: str, limit: int | None) -> dict[str, float]:
     metrics["wall_seconds"] = round(time.perf_counter() - start, 1)
     params = {"provider": provider, "chat_alias": chat_alias, "judge_alias": judge_alias,
               "limit": limit or "all"}  # fmt: skip
+    if suite == "shopping":
+        params["system_guaranteed_kinds"] = json.dumps(SYSTEM_GUARANTEED)
     run_id = log_run(suite, params, rows, metrics)
     print(json.dumps({"suite": suite, "mlflow_run_id": run_id, **metrics}, indent=2))
     return metrics

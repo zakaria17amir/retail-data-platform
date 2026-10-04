@@ -81,6 +81,21 @@ def test_gold_duckdb_blocks_file_access_even_past_the_parser(gold_dir: Path) -> 
         db._con.execute("set enable_external_access = true")
 
 
+def test_gold_duckdb_bounds_memory_threads_and_spill(gold_dir: Path) -> None:
+    db = GoldDuckDB(gold_dir)
+    settings = dict(
+        db._con.execute(
+            "select name, value from duckdb_settings()"
+            " where name in ('memory_limit', 'threads', 'max_temp_directory_size')"
+        ).fetchall()
+    )
+    assert settings["memory_limit"].startswith("512")
+    assert settings["threads"] == "2"
+    assert settings["max_temp_directory_size"].startswith("0")
+    with pytest.raises(Exception, match="locked"):
+        db._con.execute("set memory_limit = '8GB'")
+
+
 def test_explain_row_estimate_guard(gold_dir: Path) -> None:
     db = GoldDuckDB(gold_dir, max_estimated_rows=1_000_000)
     with pytest.raises(SqlRejected, match="estimated"):

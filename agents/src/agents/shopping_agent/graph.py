@@ -11,7 +11,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import interrupt
+from langgraph.types import Overwrite, interrupt
 
 from agents.core.guardrails import GuardResult, check_input, check_output
 from agents.core.registry import MAX_TOOL_ERRORS, ToolRegistry, ToolRun, run_tool_calls
@@ -48,6 +48,9 @@ class State(TypedDict, total=False):
     tool_errors: int
     blocked: bool
     answer: str
+    pending_call: dict[str, Any] | None
+    pending_quote: dict[str, Any] | None
+    approved: bool
 
 
 def check_faithful(answer: str, sources: list[str]) -> GuardResult:
@@ -70,23 +73,25 @@ def build_graph(
     order_spec = [s for s in registry.specs(APPROVER) if s["function"]["name"] == "place_order"]
     planner = llm.bind_tools([*registry.specs(AGENT), *order_spec])
 
-    def guard_input(state: State) -> State:
+    def guard_input(state: State) -> dict[str, Any]:
+        # Each user message is a new turn on the thread: keep messages, reset per-turn fields.
+        fresh: dict[str, Any] = {
+            "steps": Overwrite(["guard_input"]),
+            "runs": Overwrite([]),
+            "turn_steps": 0,
+            "tool_errors": 0,
+            "blocked": False,
+            "answer": "",
+            "pending_call": None,
+            "pending_quote": None,
+            "approved": False,
+        }
         result = check_input(state["question"])
         if not result.ok:
             log.info("input_blocked", extra={"agent": AGENT, "reasons": result.reasons})
             reasons = ", ".join(result.reasons)
-            return {
-                "steps": ["guard_input"],
-                "blocked": True,
-                "answer": REFUSAL.format(reasons=reasons),
-            }
-        return {
-            "steps": ["guard_input"],
-            "blocked": False,
-            "messages": [HumanMessage(content=state["question"])],
-            "turn_steps": 0,
-            "tool_errors": 0,
-        }
+            return {**fresh, "blocked": True, "answer": REFUSAL.format(reasons=reasons)}
+        return {**fresh, "messages": [HumanMessage(content=state["question"])]}
 
     def agent(state: State) -> State:
         reply = planner.invoke([SystemMessage(content=SYSTEM_PROMPT), *state["messages"]])
@@ -109,8 +114,8 @@ def build_graph(
         messages, runs = run_tool_calls(registry, AGENT, calls)
         return _tool_update("execute", state, messages, runs)
 
-    def approve(state: State) -> State:
-        """place_order runs only after an explicit human approval; a rejection writes nothing."""
+    def quote(state: State) -> State:
+        """Run sibling calls and price the order once, before the interrupt (never re-run)."""
         last = state["messages"][-1]
         calls = last.tool_calls if isinstance(last, AIMessage) else []
         orders = [c for c in calls if c["name"] == "place_order"]
@@ -125,16 +130,30 @@ def build_graph(
             registry, APPROVER, [{**order, "name": "quote_order"}]
         )
         if quote_runs[0].error is not None:
-            return _tool_update("approve", state, [*messages, *quote_msgs], [*runs, *quote_runs])
-        decision = interrupt({"action": "place_order", "quote": quote_runs[0].output})
-        if _approved(decision):
-            placed_msgs, placed_runs = run_tool_calls(registry, APPROVER, [order])
+            messages += quote_msgs
+        update = _tool_update("quote", state, messages, [*runs, *quote_runs])
+        if quote_runs[0].error is None:
+            update |= {"pending_call": dict(order), "pending_quote": quote_runs[0].output}
+        return update
+
+    def approve(state: State) -> State:
+        """Only the interrupt: LangGraph re-runs this node on resume, so it has no side effects."""
+        decision = interrupt({"action": "place_order", "quote": state["pending_quote"]})
+        return {"steps": ["approve"], "approved": _approved(decision)}
+
+    def place(state: State) -> State:
+        """Insert exactly the approved quote; a rejection or a stock drop writes nothing."""
+        order = state["pending_call"] or {}
+        if state.get("approved"):
+            ins = {"name": "place_quote", "args": state["pending_quote"], "id": order["id"]}
+            msgs, (run,) = run_tool_calls(registry, APPROVER, [ins])
+            runs = [ToolRun("place_order", order["args"], run.output, run.error)]
         else:
             log.info("order_rejected", extra={"agent": AGENT})
-            placed_msgs = [ToolMessage(content=REJECTED, tool_call_id=order["id"])]
-            placed_runs = [ToolRun("place_order", order["args"], error="rejected by the user")]
-        all_runs = [*runs, *quote_runs, *placed_runs]
-        return _tool_update("approve", state, [*messages, *placed_msgs], all_runs)
+            msgs = [ToolMessage(content=REJECTED, tool_call_id=order["id"])]
+            runs = [ToolRun("place_order", order["args"], error="rejected by the user")]
+        cleared: State = {"pending_call": None, "pending_quote": None, "approved": False}
+        return _tool_update("place", state, msgs, runs) | cleared
 
     def answer(state: State) -> State:
         last = state["messages"][-1]
@@ -159,22 +178,27 @@ def build_graph(
     def after_guard(state: State) -> Literal["agent", "__end__"]:
         return "__end__" if state.get("blocked") else "agent"
 
-    def after_agent(state: State) -> Literal["execute", "approve", "answer"]:
+    def after_agent(state: State) -> Literal["execute", "quote", "answer"]:
         last = state["messages"][-1]
         if not (isinstance(last, AIMessage) and last.tool_calls):
             return "answer"
-        return "approve" if any(c["name"] == "place_order" for c in last.tool_calls) else "execute"
+        return "quote" if any(c["name"] == "place_order" for c in last.tool_calls) else "execute"
 
     def after_tools(state: State) -> Literal["agent", "answer"]:
         exhausted = state.get("tool_errors", 0) >= MAX_TOOL_ERRORS
         return "answer" if exhausted or state["turn_steps"] >= MAX_STEPS else "agent"
+
+    def after_quote(state: State) -> Literal["approve", "agent", "answer"]:
+        return "approve" if state.get("pending_quote") else after_tools(state)
 
     g = StateGraph(State)
     for name, node in [
         ("guard_input", guard_input),
         ("agent", agent),
         ("execute", execute),
+        ("quote", quote),
         ("approve", approve),
+        ("place", place),
         ("answer", answer),
     ]:
         g.add_node(name, node)
@@ -182,7 +206,9 @@ def build_graph(
     g.add_conditional_edges("guard_input", after_guard)
     g.add_conditional_edges("agent", after_agent)
     g.add_conditional_edges("execute", after_tools)
-    g.add_conditional_edges("approve", after_tools)
+    g.add_conditional_edges("quote", after_quote)
+    g.add_edge("approve", "place")
+    g.add_conditional_edges("place", after_tools)
     g.add_edge("answer", END)
     return g.compile(checkpointer=checkpointer)
 

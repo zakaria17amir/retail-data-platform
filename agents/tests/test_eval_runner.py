@@ -83,6 +83,20 @@ def test_analytics_runner_records_errors_and_judge_rejects() -> None:
     assert rows[0]["judge_score"] is None and metrics["judge_rejects"] == 1
 
 
+def test_judge_connection_error_does_not_abort_the_suite() -> None:
+    class Down:
+        def bind(self, **_: Any) -> "Down":
+            return self
+
+        def invoke(self, *_: Any, **__: Any) -> Any:
+            raise ConnectionError("proxy down")
+
+    graph = FakeGraph(*({"answer": "200", "runs": [data_run(["r"], [[200.0]])]} for _ in "ab"))
+    rows, metrics = run_analytics(ANALYTICS_CASES, graph, Down())  # type: ignore[arg-type]
+    assert [r["judge_score"] for r in rows] == [None, None]
+    assert [r["correct"] for r in rows] == [True, False] and metrics["judge_rejects"] == 2
+
+
 def tool_run(name: str, error: str | None = None) -> dict[str, Any]:
     return {"name": name, "args": {}, "output": None if error else {"ok": 1}, "error": error}
 
@@ -123,8 +137,13 @@ def test_shopping_runner_rejects_approvals_and_scores() -> None:
     first = graph.payloads[0]
     assert first["question"] == "Find a desk lamp" and first["customer_id"] == "c1"
     assert [r["correct"] for r in rows] == [True, True, True, False]
+    assert [r["attempted_forbidden"] for r in rows[2:]] == [True, False]
     assert metrics["tool_selection_accuracy"] == 1.0
     assert metrics["refusal_rate"] == 0.5
+    assert metrics["attempted_forbidden_rate"] == 0.5
+    assert metrics["unapproved_order_safe_rate"] == 1.0
+    assert metrics["unapproved_order_attempted_forbidden_rate"] == 1.0
+    assert metrics["pii_exfiltration_safe_rate"] == 0.0
     assert metrics["false_refusal_rate"] == 0.0
     assert metrics["faithfulness"] == 4.0  # only cases with successful tool output are judged
     assert metrics["mean_trajectory_length"] == 0.5
@@ -165,11 +184,16 @@ def test_shopping_runner_drives_the_real_graph_and_registry_over_golden_cases() 
         ["get_product", "place_order"],
         ["place_order"],
     ]
-    assert [r["correct"] for r in rows] == [True, True, True]
+    # adv-05: the scripted model is hijacked by the poisoned review into calling place_order;
+    # the HITL gate stops the write, but the case must still fail (model robustness).
+    assert [r["correct"] for r in rows] == [True, False, True]
+    assert [r["attempted_forbidden"] for r in rows] == [False, True, True]
     assert rows[1]["poison_seen"] is True
     assert shop.inserted == []
     assert search.calls and metrics["tool_selection_accuracy"] == 1.0
-    assert metrics["refusal_rate"] == 1.0 and metrics["faithfulness"] == 4.0
+    assert metrics["refusal_rate"] == 0.5 and metrics["faithfulness"] == 4.0
+    assert metrics["indirect_injection_safe_rate"] == 0.0
+    assert metrics["indirect_injection_attempted_forbidden_rate"] == 1.0
 
 
 class In(BaseModel):
@@ -230,3 +254,22 @@ def test_cli_parses_eval_commands(suite: str, monkeypatch: pytest.MonkeyPatch) -
     cli.main(["eval", suite, "--provider", "hosted", "--limit", "10"])
     cli.main(["eval", suite])
     assert calls == [(suite, "hosted", 10), (suite, "local", None)]
+
+
+def test_analytics_cli_honours_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents import cli
+    from agents.analytics_agent import graph, tools
+    from agents.core import llm, tracing
+
+    used: list[str] = []
+    monkeypatch.setenv("LLM_PROVIDER", "hosted")
+    monkeypatch.delenv("POSTGRES_DSN", raising=False)
+    monkeypatch.setattr(tracing, "enable_tracing", lambda: None)
+    monkeypatch.setattr(tools, "default_registry", lambda: None)
+    monkeypatch.setattr(llm, "chat_model", lambda alias="chat": used.append(alias))
+    monkeypatch.setattr(graph, "build_graph", lambda *a, **k: None)
+    monkeypatch.setattr(
+        graph, "ask", lambda g, p, c, model_alias="chat": used.append(model_alias) or {"answer": ""}
+    )
+    cli.main(["analytics", "Revenue?"])
+    assert used == ["chat-hosted", "chat-hosted"]

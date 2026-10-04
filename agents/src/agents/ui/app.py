@@ -92,6 +92,11 @@ def thread_config(thread_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": thread_id}}
 
 
+def checkpoint_thread(profile: str, thread_id: str, customer: str) -> str:
+    """A shopping history belongs to one customer: switching the customer id starts afresh."""
+    return f"{thread_id}:{customer}" if profile == "Shopping" else thread_id
+
+
 def payload(profile: str, text: str, thread_id: str) -> dict[str, Any]:
     if profile == "Shopping":
         return {"question": text, "session_id": thread_id}
@@ -192,9 +197,10 @@ async def on_chat_start() -> None:
 async def on_message(message: cl.Message) -> None:
     profile = cl.user_session.get("chat_profile") or "Analytics"  # type: ignore[no-untyped-call]
     thread_id = cl.context.session.thread_id
-    config = thread_config(thread_id)
     settings = cl.user_session.get("chat_settings")  # type: ignore[no-untyped-call]
-    graph = graph_for(profile, customer_id(settings), thread_id)
+    customer = customer_id(settings)
+    config = thread_config(checkpoint_thread(profile, thread_id, customer))
+    graph = graph_for(profile, customer, thread_id)
     current: Any = payload(profile, message.content, thread_id)
     while (pending := await _stream(graph, current, config)) is not None:
         current = Command(resume=await _resolve(pending))

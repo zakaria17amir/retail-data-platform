@@ -52,6 +52,14 @@ def test_thread_config_uses_the_chainlit_thread_id(app: ModuleType) -> None:
     assert app.thread_config("t1") == {"configurable": {"thread_id": "t1"}}
 
 
+def test_shopping_checkpoint_thread_is_keyed_by_customer_and_chat_thread(app: ModuleType) -> None:
+    assert app.checkpoint_thread("Analytics", "t1", "cust-1") == "t1"
+    mine = app.checkpoint_thread("Shopping", "t1", "cust-1")
+    assert mine != app.checkpoint_thread("Shopping", "t1", "cust-2")
+    assert mine != app.checkpoint_thread("Shopping", "t2", "cust-1")
+    assert "cust-1" in mine and "t1" in mine
+
+
 def test_profiles_build_graphs_with_one_shared_checkpointer(
     app: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:

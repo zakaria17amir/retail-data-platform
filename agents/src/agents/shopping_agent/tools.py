@@ -370,12 +370,24 @@ def build_registry(
     def quote_order(args: PlaceOrderIn) -> Quote:
         return quote(shop, enrichment, session.customer_id, args)
 
-    def place_order(args: PlaceOrderIn) -> PlaceOrderOut:
-        q = quote_order(args)
+    def place_quote(q: Quote) -> PlaceOrderOut:
+        """Insert exactly the approved quote: prices/time are not re-read; a stock drop aborts."""
+        if q.customer_id != session.customer_id:
+            raise ToolError("this quote belongs to another customer; nothing was placed")
+        on_hand = shop.stock([ln.product_id for ln in q.lines])
+        for ln in q.lines:
+            if on_hand.get(ln.product_id, 0) < ln.quantity:
+                raise ToolError(
+                    f"stock changed since approval: only {on_hand.get(ln.product_id, 0)} of "
+                    f"product {ln.product_id!r} left; nothing was placed"
+                )
         order_id = uuid.uuid4().hex
         shop.insert_order(order_id, q)
         log.info("order_placed", extra={"agent": AGENT, "order_id": order_id, "total": q.total})
         return PlaceOrderOut(order_id=order_id, status="created", **q.model_dump())
+
+    def place_order(args: PlaceOrderIn) -> PlaceOrderOut:
+        return place_quote(quote_order(args))
 
     llm = frozenset({AGENT})
     approver = frozenset({APPROVER})
@@ -435,6 +447,14 @@ def build_registry(
             PlaceOrderIn,
             PlaceOrderOut,
             place_order,
+            approver,
+        ),
+        Tool(
+            "place_quote",
+            "Insert the quote the customer approved, unchanged.",
+            Quote,
+            PlaceOrderOut,
+            place_quote,
             approver,
         ),
     ]:

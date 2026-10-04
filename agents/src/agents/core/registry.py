@@ -13,6 +13,8 @@ from agents.core.guardrails import wrap_untrusted
 log = logging.getLogger(__name__)
 
 MAX_TOOL_ERRORS = 3
+# keeps tool results inside a small (Ollama) context window; the run keeps every row
+MAX_LLM_ROWS = 50
 
 
 class ToolError(Exception):
@@ -76,6 +78,14 @@ class ToolRegistry:
         return tool.output_model.model_validate(tool.fn(tool.input_model.model_validate(args)))
 
 
+def _for_llm(out: dict[str, Any]) -> dict[str, Any]:
+    rows = out.get("rows")
+    if not isinstance(rows, list) or len(rows) <= MAX_LLM_ROWS:
+        return out
+    omitted = f"{len(rows) - MAX_LLM_ROWS} more rows omitted"
+    return {**out, "rows": rows[:MAX_LLM_ROWS], "note": omitted}
+
+
 def run_tool_calls(
     registry: ToolRegistry, agent: str, calls: Sequence[Mapping[str, Any]]
 ) -> tuple[list[ToolMessage], list[ToolRun]]:
@@ -88,7 +98,7 @@ def run_tool_calls(
         try:
             out = registry.call(agent, name, args).model_dump(mode="json")
             run = ToolRun(name, args, output=out)
-            content = wrap_untrusted(json.dumps(out, default=str))
+            content = wrap_untrusted(json.dumps(_for_llm(out), default=str))
         except Exception as exc:  # noqa: BLE001 - every tool failure is fed back to the model
             run = ToolRun(name, args, error=f"{type(exc).__name__}: {exc}")
             content = f"ERROR: {run.error}\nFix the arguments and call the tool again."

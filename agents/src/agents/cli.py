@@ -10,6 +10,10 @@ from langgraph.types import Command
 from agents.core.logs import configure_logging
 
 
+def _chat_alias() -> str:
+    return "chat-hosted" if os.environ.get("LLM_PROVIDER") == "hosted" else "chat"
+
+
 def _analytics(question: str, thread: str) -> None:
     from agents.analytics_agent.graph import ask, build_graph
     from agents.analytics_agent.tools import default_registry
@@ -21,12 +25,13 @@ def _analytics(question: str, thread: str) -> None:
     saver_cm: Any = (
         postgres_checkpointer() if os.environ.get("POSTGRES_DSN") else nullcontext(InMemorySaver())
     )
+    alias = _chat_alias()
     with saver_cm as saver:
-        graph = build_graph(chat_model(), default_registry(), checkpointer=saver)
+        graph = build_graph(chat_model(alias), default_registry(), checkpointer=saver)
         config = {"configurable": {"thread_id": thread}}
         payload: Any = {"question": question}
         while True:
-            out = ask(graph, payload, config)
+            out = ask(graph, payload, config, model_alias=alias)
             if "__interrupt__" not in out:
                 break
             payload = Command(resume=input(f"{out['__interrupt__'][0].value['clarify']} > "))
@@ -44,7 +49,7 @@ def _shopping(message: str, customer: str, thread: str) -> None:
     from agents.shopping_agent.tools import Session, build_registry
 
     enable_tracing()
-    alias = "chat-hosted" if os.environ.get("LLM_PROVIDER") == "hosted" else "chat"
+    alias = _chat_alias()
     shop = PostgresShop(read_dsn(), os.environ["SHOP_DSN"])
     registry = build_registry(shop, Session(customer_id=customer, session_id=thread))
     saver_cm: Any = (

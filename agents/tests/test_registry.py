@@ -2,7 +2,13 @@ import pytest
 from langchain_core.messages import ToolMessage
 from pydantic import BaseModel
 
-from agents.core.registry import Tool, ToolNotAllowed, ToolRegistry, run_tool_calls
+from agents.core.registry import (
+    MAX_LLM_ROWS,
+    Tool,
+    ToolNotAllowed,
+    ToolRegistry,
+    run_tool_calls,
+)
 
 
 class EchoIn(BaseModel):
@@ -44,6 +50,22 @@ def test_duplicate_registration_fails() -> None:
     reg = registry()
     with pytest.raises(ValueError):
         reg.register(Tool("echo", "again", EchoIn, EchoOut, echo, agents=frozenset({"x"})))
+
+
+class TableOut(BaseModel):
+    columns: list[str]
+    rows: list[list[int]]
+
+
+def test_tool_rows_fed_to_the_llm_are_capped_but_the_run_keeps_them_all() -> None:
+    reg = ToolRegistry()
+    big = TableOut(columns=["x"], rows=[[i] for i in range(MAX_LLM_ROWS + 25)])
+    reg.register(Tool("table", "Rows.", EchoIn, TableOut, lambda _: big, frozenset({"a"})))
+    messages, runs = run_tool_calls(reg, "a", [{"name": "table", "args": {"text": ""}, "id": "1"}])
+    assert runs[0].output == big.model_dump()
+    content = str(messages[0].content)
+    assert f"[{MAX_LLM_ROWS - 1}]" in content and f"[{MAX_LLM_ROWS}]" not in content
+    assert "25 more rows omitted" in content
 
 
 def test_run_tool_calls_feeds_errors_back() -> None:

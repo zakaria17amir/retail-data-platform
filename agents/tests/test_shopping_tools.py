@@ -43,7 +43,11 @@ def test_tool_allowlists() -> None:
         "get_recommendations",
         "get_order_status",
     }
-    assert {t.name for t in reg.tools_for(APPROVER)} == {"quote_order", "place_order"}
+    assert {t.name for t in reg.tools_for(APPROVER)} == {
+        "quote_order",
+        "place_order",
+        "place_quote",
+    }
     with pytest.raises(ToolNotAllowed):
         reg.call(AGENT, "place_order", {"items": [{"product_id": P1, "quantity": 1}]})
     with pytest.raises(ToolNotAllowed):
@@ -189,3 +193,38 @@ def test_place_order_inserts_the_quote() -> None:
     placed = out.model_dump()
     assert placed["status"] == "created" and len(placed["order_id"]) == 32
     assert [(oid, q.total) for oid, q in shop.inserted] == [(placed["order_id"], 120.0)]
+
+
+def _approved_quote(shop: FakeShop) -> dict[str, Any]:
+    items = {"items": [{"product_id": P1, "quantity": 2}]}
+    return registry(shop).call(APPROVER, "quote_order", items).model_dump(mode="json")
+
+
+def test_place_quote_inserts_exactly_the_approved_quote() -> None:
+    shop = FakeShop()
+    approved = _approved_quote(shop)
+    shop.rows[P1] = shop.rows[P1].model_copy(update={"price": 1.0})
+    placed = registry(shop).call(APPROVER, "place_quote", approved).model_dump(mode="json")
+    assert placed["total"] == approved["total"] == 120.0
+    assert [q.model_dump(mode="json") for _, q in shop.inserted] == [approved]
+
+
+@pytest.mark.parametrize(
+    ("change", "match"),
+    [
+        ({"on_hand": {P1: 1}}, "nothing was placed"),
+        ({"customer_id": "cust-2"}, "another customer"),
+    ],
+)
+def test_place_quote_aborts_on_stock_drop_or_foreign_quote(
+    change: dict[str, Any], match: str
+) -> None:
+    shop = FakeShop()
+    approved = _approved_quote(shop)
+    if "on_hand" in change:
+        shop.on_hand.update(change["on_hand"])
+    else:
+        approved = {**approved, **change}
+    with pytest.raises(ToolError, match=match):
+        registry(shop).call(APPROVER, "place_quote", approved)
+    assert shop.inserted == []

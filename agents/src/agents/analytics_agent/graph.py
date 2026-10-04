@@ -134,7 +134,12 @@ def build_graph(
         return {"steps": ["clarify"], "pending_question": pending}
 
     def ask_user(state: State) -> State:
-        reply = interrupt({"clarify": state["pending_question"]})
+        reply = str(interrupt({"clarify": state["pending_question"]}))
+        result = check_input(reply)
+        if not result.ok:
+            log.info("input_blocked", extra={"agent": AGENT, "reasons": result.reasons})
+            refusal = REFUSAL.format(reasons=", ".join(result.reasons))
+            return {"steps": ["ask_user"], "blocked": True, "answer": refusal}
         return {"steps": ["ask_user"], "question": f"{state['question']}\nClarification: {reply}"}
 
     def plan(state: State) -> State:
@@ -212,6 +217,9 @@ def build_graph(
     def after_clarify(state: State) -> Literal["ask_user", "plan"]:
         return "ask_user" if state.get("pending_question") else "plan"
 
+    def after_ask(state: State) -> Literal["plan", "__end__"]:
+        return "__end__" if state.get("blocked") else "plan"
+
     def after_plan(state: State) -> Literal["execute", "validate"]:
         last = state["messages"][-1]
         return "execute" if isinstance(last, AIMessage) and last.tool_calls else "validate"
@@ -240,7 +248,7 @@ def build_graph(
     g.add_edge(START, "guard_input")
     g.add_conditional_edges("guard_input", after_guard)
     g.add_conditional_edges("clarify", after_clarify)
-    g.add_edge("ask_user", "plan")
+    g.add_conditional_edges("ask_user", after_ask)
     g.add_conditional_edges("plan", after_plan)
     g.add_conditional_edges("execute", after_execute)
     g.add_conditional_edges("validate", after_validate)

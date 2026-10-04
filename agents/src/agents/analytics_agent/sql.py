@@ -135,7 +135,8 @@ class GoldDuckDB:
         self.timeout_s, self.max_estimated_rows = timeout_s, max_estimated_rows
         files = sorted(Path(gold_dir).resolve().glob("*.parquet"))
         self.tables = frozenset(f.stem for f in files)
-        catalog = Path(tempfile.mkdtemp(prefix="agents_gold_")) / "gold.duckdb"
+        self._tmp = tempfile.TemporaryDirectory(prefix="agents_gold_", ignore_cleanup_errors=True)
+        catalog = Path(self._tmp.name) / "gold.duckdb"
         with duckdb.connect(str(catalog)) as writer:
             for f in files:
                 path = f.as_posix().replace("'", "''")
@@ -145,6 +146,10 @@ class GoldDuckDB:
         self._con.execute("SET GLOBAL TimeZone = 'UTC'")
         self._con.execute("SET allowed_directories = ?", [[allowed]])
         self._con.execute("SET enable_external_access = false")
+        # scalar range()/repeat() pass the guard; bound them before the timeout can fire
+        self._con.execute("SET memory_limit = '512MiB'")
+        self._con.execute("SET threads = 2")
+        self._con.execute("SET max_temp_directory_size = '0B'")
         self._con.execute("SET lock_configuration = true")
 
     def run_sql(self, sql: str) -> TableOut:
