@@ -14,7 +14,7 @@ import pandas as pd
 from mlflow.pyfunc.model import PythonModel
 from scipy import sparse
 
-from retail_ml.recommender.candidates import normalise, product_events
+from retail_ml.recommender.candidates import normalise
 
 SESSION_COLUMNS = ["n_events", "n_product_views", "n_categories", "n_cart_adds", "dwell_seconds"]
 POPULARITY_COLUMNS = ["views_24h", "carts_24h"]
@@ -58,26 +58,30 @@ def session_prefixes(events: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def session_features(prefix: pd.DataFrame, category: pd.Series, last_n: int) -> pd.DataFrame:
-    """Per session (index session_id): the `session_features` view columns plus `last_ts`.
-    `last_product_ids` = the last `last_n` distinct products, oldest first, comma-joined."""
+    """Per session (index session_id): the `session_features` view columns plus `last_ts`, with
+    the streaming definitions (`lakehouse_spark.realtime.sessions._features`):
+    `last_product_ids` = up to `last_n` distinct products, most recent first, comma-joined;
+    `n_categories` / `last_category` over the catalogue categories of the events that have one
+    (latest wins); `dwell_seconds` = whole seconds from the first to the last event."""
     sid = prefix["session_id"]
     kind = prefix["event_type"]
     ts = prefix.groupby(sid)["event_ts"]
-    prods = product_events(prefix)
-    last = prods.drop_duplicates(["session_id", "product_id"], keep="last")
-    last = last.sort_values(["session_id", "event_ts"], kind="stable")
-    last = last[last.groupby("session_id").cumcount(ascending=False) < last_n]
+    prods = prefix[prefix["product_id"].notna()].sort_values(
+        ["session_id", "event_ts"], kind="stable"
+    )
+    recent = prods.iloc[::-1].drop_duplicates(["session_id", "product_id"])
+    recent = recent[recent.groupby("session_id").cumcount() < last_n]
+    cats = prods["product_id"].map(category)
+    known = cats.notna()
     out = pd.DataFrame(
         {
             "n_events": sid.value_counts(),
             "n_product_views": kind.eq("product_view").groupby(sid).sum(),
-            "n_categories": prods["product_id"]
-            .map(category)
-            .groupby(prods["session_id"])
-            .nunique(),
+            "n_categories": cats.groupby(prods["session_id"]).nunique(),
             "n_cart_adds": kind.eq("add_to_cart").groupby(sid).sum(),
-            "dwell_seconds": (ts.max() - ts.min()).dt.total_seconds(),
-            "last_product_ids": last.groupby("session_id")["product_id"].agg(",".join),
+            "dwell_seconds": (ts.max() - ts.min()).dt.total_seconds() // 1,
+            "last_category": cats[known].groupby(prods.loc[known, "session_id"]).last(),
+            "last_product_ids": recent.groupby("session_id")["product_id"].agg(",".join),
             "last_ts": ts.max(),
         }
     )
@@ -169,7 +173,9 @@ class Tables:
         per = [self.items.get_indexer(pd.Index([p for p in u.split(",") if p])) for u in uniques]
         per = [a[a >= 0] for a in per]
         lens = np.array([len(a) for a in per], dtype="int64")
-        last = np.array([a[-1] if len(a) else -1 for a in per], dtype="int64")[groups]
+        # most recent first: the first product with a category gives the session's category
+        latest = [self.category[a][self.category[a] >= 0] for a in per]
+        last_cat = np.array([c[0] if len(c) else -1 for c in latest], dtype="int64")[groups]
         flat = np.concatenate(per)
         rep = lens[groups]
         row = np.repeat(np.arange(n), rep)
@@ -190,7 +196,6 @@ class Tables:
         if has.any():
             covis_max[has] = np.maximum.reduceat(covis, first[has])
             als_max[has] = np.maximum.reduceat(als, first[has])
-        last_cat = np.where(last >= 0, self.category[last], -1)
         cand_cat = np.where(cand >= 0, self.category[cand], -1)
         X = frame[SESSION_COLUMNS].astype("float64").reset_index(drop=True)
         X["last_category"] = last_cat.astype("int64")

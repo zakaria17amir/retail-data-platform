@@ -135,17 +135,15 @@ def rank_frame(
     targets: pd.DataFrame,
     feats: pd.DataFrame,
     stage: Stage1,
-    category: pd.Series,
     cfg: RecommenderConfig,
 ) -> pd.DataFrame:
     """(session × pooled candidate) rows: model inputs, `cand_score`, `label` (purchase target).
     Candidate popularity is counted in the 24 dataset hours up to the prefix's last event."""
     split = feats["last_product_ids"].str.split(",")
     anchors = split.explode().replace("", None).rename("product_id").reset_index()
-    last_category = split.str[-1].map(category)
     viewed = product_events(prefix[prefix["session_id"].isin(feats.index)])
     pools = session_pools(
-        anchors, viewed, stage.lists, stage.pop, last_category, cfg.pool_size, cfg.pop_pool
+        anchors, viewed, stage.lists, stage.pop, feats["last_category"], cfg.pool_size, cfg.pop_pool
     )
     frame = pools.join(feats, on="session_id")
     for col, kind in (("views_24h", "product_view"), ("carts_24h", "add_to_cart")):
@@ -167,14 +165,13 @@ def fit_ranker(frame: pd.DataFrame, tables: Tables, params: dict[str, Any]) -> A
 
 
 def popularity_ranking(
-    feats: pd.DataFrame, viewed: pd.DataFrame, pop: Popularity, category: pd.Series, k: int
+    feats: pd.DataFrame, viewed: pd.DataFrame, pop: Popularity, k: int
 ) -> pd.DataFrame:
-    """Baseline: most viewed in the train window, the last product's category first, then global;
-    already-viewed products excluded."""
+    """Baseline: most viewed in the train window, the session's `last_category` first, then
+    global; already-viewed products excluded."""
     seen = viewed.groupby("session_id")["product_id"].agg(set)
     rows = []
-    for sid, last_ids in feats["last_product_ids"].items():
-        cat = category.get(last_ids.split(",")[-1]) if last_ids else None
+    for sid, cat in feats["last_category"].items():
         ranked = [*pop["category"].get(cat, []), *pop["global"]] if pd.notna(cat) else pop["global"]
         skip = seen.get(sid, set())
         picks = [p for p in dict.fromkeys(ranked) if p not in skip][:k]
@@ -295,21 +292,18 @@ def train(cfg: RecommenderConfig, promotion_mode: str = "auto") -> RecommenderTr
     test_feats = feats[first >= cfg.test_start]
     test_targets = targets[targets["session_id"].isin(test_feats.index)]
 
-    category = catalogue["category"]
     stage_a = fit_stage1(events[started < cfg.ranker_start], catalogue, cfg)
-    fit_frame = rank_frame(events, prefix, targets, rank_feats, stage_a, category, cfg)
+    fit_frame = rank_frame(events, prefix, targets, rank_feats, stage_a, cfg)
     ranker = fit_ranker(fit_frame, stage_a.tables, cfg.lightgbm)
     del stage_a, fit_frame  # one stage in memory at a time (2 GB ML containers)
     stage_b = fit_stage1(events[started < cfg.test_start], catalogue, cfg)
-    test_frame = rank_frame(events, prefix, targets, test_feats, stage_b, category, cfg)
+    test_frame = rank_frame(events, prefix, targets, test_feats, stage_b, cfg)
     model = RecommenderModel(stage_b.tables, ranker, cfg.pool_size, cfg.pop_pool)
 
     keys = test_frame[["session_id", "product_id"]]
     viewed = product_events(prefix[prefix["session_id"].isin(test_feats.index)])
     ranked = {
-        "popularity": popularity_ranking(
-            test_feats, viewed, stage_b.pop, catalogue["category"], cfg.k
-        ),
+        "popularity": popularity_ranking(test_feats, viewed, stage_b.pop, cfg.k),
         "candidates": keys.assign(score=test_frame["cand_score"].to_numpy()),
         "lightgbm": keys.assign(score=model.predict(None, model_inputs(test_frame))),
     }

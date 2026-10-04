@@ -15,8 +15,8 @@ from retail_ml.recommender.candidates import (
     session_pools,
 )
 from retail_ml.recommender.publish import candidate_payloads, publish
-from retail_ml.recommender.ranker import session_prefixes
-from retail_ml.recommender.train import ranking_metrics
+from retail_ml.recommender.ranker import Tables, session_features, session_prefixes
+from retail_ml.recommender.train import popularity_ranking, ranking_metrics
 
 COLUMNS = [
     "event_id",
@@ -192,6 +192,61 @@ def test_prefix_stops_before_the_last_product_view_preceding_checkout() -> None:
         {"session_id": "s1", "product_id": "C"},
         {"session_id": "s1", "product_id": "D"},
     ]
+
+
+def test_session_features_match_the_streaming_definitions() -> None:
+    # lakehouse_spark.realtime.sessions._features: products most recent first (distinct, <= 5),
+    # categories of every event with one, last_category = the latest event that has one,
+    # dwell = whole seconds between first and last event
+    df = events(
+        [
+            ("s1", "page_view", None, 0),
+            ("s1", "product_view", "A", 10),
+            ("s1", "product_view", "B", 20),
+            ("s1", "product_view", "A", 30),
+            ("s1", "product_view", "D", 40),
+            ("s1", "add_to_cart", "C", 50),  # C has no category
+            ("s1", "search", None, 61),
+        ]
+    )
+    category = pd.Series({"A": "x", "B": "y", "D": "x"})
+    f = session_features(df, category, last_n=3).loc["s1"]
+    assert f["last_product_ids"] == "C,D,A"
+    assert f["last_category"] == "x"
+    assert f["n_categories"] == 2
+    assert (f["n_events"], f["n_product_views"], f["n_cart_adds"]) == (7, 4, 1)
+    assert f["dwell_seconds"] == 61
+
+
+def test_artefact_and_baseline_take_the_most_recent_categorised_product() -> None:
+    items = pd.Index(["A", "B", "C", "D"])
+    catalogue = pd.DataFrame(
+        {"category": ["x", "y", None, "y"], "price": [1.0, 2.0, 3.0, 4.0]}, index=items
+    )
+    empty = pd.Series(dtype="float64")
+    tables = Tables.build(
+        items, catalogue, empty, covisitation(events([]), items), np.zeros((4, 2))
+    )
+    frame = pd.DataFrame(
+        {
+            "last_product_ids": ["C,B,A"] * 2,  # C most recent but uncategorised -> B's "y"
+            "n_events": 3.0,
+            "n_product_views": 3.0,
+            "n_categories": 2.0,
+            "n_cart_adds": 0.0,
+            "dwell_seconds": 9.0,
+            "product_id": ["D", "A"],
+            "views_24h": 0.0,
+            "carts_24h": 0.0,
+        }
+    )
+    X = tables.features(frame)
+    assert X["same_category"].tolist() == [1.0, 0.0]
+    feats = pd.DataFrame({"last_product_ids": ["C,B,A"], "last_category": ["y"]}, index=["s1"])
+    pop = {"global": ["E", "D"], "category": {"y": ["D"], "x": ["E"]}}
+    viewed = pd.DataFrame({"session_id": ["s1"] * 3, "product_id": ["A", "B", "C"]})
+    ranked = popularity_ranking(feats, viewed, pop, k=2)
+    assert ranked["product_id"].tolist() == ["D", "E"]  # "y" first, not A's "x"
 
 
 def test_ranking_metrics_by_hand() -> None:
