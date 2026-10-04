@@ -1,0 +1,245 @@
+models:
+  - name: ml_late_delivery_training
+    description: >
+      Late-delivery training rows: one per non-deleted order with order_approved_ts_utc. Primary
+      seller and product_category come from the highest-price non-deleted item (ties -> smallest
+      seller_id, then order_item_id); n_items/n_sellers/total_price/total_freight sum all
+      non-deleted items. Seller/customer attributes are the versions valid at purchase, with
+      zip-prefix centroids. payment_* from payment_sequential = 1. is_late is null unless the
+      order is delivered (is_delivered and a delivery timestamp).
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >-
+              (is_late is null)
+              = (order_status <> 'delivered' or order_delivered_customer_ts_utc is null)
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - unique
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+      - name: order_approved_ts_utc
+        data_tests: [not_null]
+      - name: seller_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_seller')
+                field: seller_id
+
+  - name: ml_seller_features_daily
+    description: >
+      Daily seller snapshots for Feast (seller_stats). Row (seller_id, feature_ts = day D 00:00
+      UTC) aggregates the seller's delivered orders (non-deleted items, counted once per order)
+      with order_delivered_customer_ts_utc in [D - 90 days, D); one row per seller per day from
+      the date of the seller's first delivery to the dataset end (last purchase date).
+      seller_avg_delivery_days_90d = purchase -> customer delivery in days; rates are null when
+      the window is empty.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [seller_id, feature_ts]
+    columns:
+      - name: seller_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_seller')
+                field: seller_id
+      - name: feature_ts
+        data_tests: [not_null]
+      - name: seller_orders_90d
+        data_tests: [not_null]
+      - name: created_ts
+        data_tests: [not_null]
+
+  - name: ml_demand_daily
+    description: >
+      Daily distinct revenue orders per product_category x customer_state (an order counts once
+      per category it contains), zero-filled per series from its first order date to the last
+      revenue-order date E. Cutoff C = E - (ml_demand_test_days - 1) is the first day of the
+      forecast test window (last 28 days). is_modelled = the series has >= 1 order on at least
+      50 % of the ml_demand_window_days (180) days in [C - 180, C).
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [date, product_category, customer_state]
+    columns:
+      - name: date
+        data_tests: [not_null]
+      - name: product_category
+        data_tests: [not_null]
+      - name: customer_state
+        data_tests: [not_null]
+      - name: orders
+        data_tests: [not_null]
+      - name: is_modelled
+        data_tests: [not_null]
+
+unit_tests:
+  - name: ml_seller_features_daily_only_prior_deliveries
+    description: >
+      Day D counts only deliveries in [D - 90 days, D): a delivery at D 00:00 or later that day is
+      excluded; one 90 days before D is included, 91 days before is not. Undelivered, canceled
+      with a delivery timestamp, and deleted-item orders are ignored; two items count one order.
+      Rows span the first delivery date to the last purchase date.
+    model: ml_seller_features_daily
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: o1, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-02 10:00:00+00", is_delivered: true, is_late: false, purchase_to_customer_hours: 48}
+          - {order_id: o5, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-02 20:00:00+00", is_delivered: true, is_late: false, purchase_to_customer_hours: 72}
+          - {order_id: o2, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-03 00:00:00+00", is_delivered: true, is_late: true, purchase_to_customer_hours: 96}
+          - {order_id: o3, order_purchase_ts_utc: "2018-01-03 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-03 23:00:00+00", is_delivered: true, is_late: false, purchase_to_customer_hours: 0}
+          - {order_id: o_shipped, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: null, is_delivered: false, is_late: false, purchase_to_customer_hours: null}
+          - {order_id: o_canceled, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-01 00:00:00+00", is_delivered: false, is_late: false, purchase_to_customer_hours: 24}
+          - {order_id: o_deleted_item, order_purchase_ts_utc: "2017-12-31 00:00:00+00", order_delivered_customer_ts_utc: "2018-01-01 00:00:00+00", is_delivered: true, is_late: true, purchase_to_customer_hours: 24}
+          - {order_id: o_end, order_purchase_ts_utc: "2018-04-03 12:00:00+00", order_delivered_customer_ts_utc: null, is_delivered: false, is_late: false, purchase_to_customer_hours: null}
+      - input: ref('fct_order_items')
+        rows:
+          - {order_id: o1, seller_id: s1, is_deleted: false}
+          - {order_id: o5, seller_id: s1, is_deleted: false}
+          - {order_id: o2, seller_id: s1, is_deleted: false}
+          - {order_id: o3, seller_id: s1, is_deleted: false}
+          - {order_id: o3, seller_id: s1, is_deleted: false}
+          - {order_id: o_shipped, seller_id: s1, is_deleted: false}
+          - {order_id: o_canceled, seller_id: s1, is_deleted: false}
+          - {order_id: o_deleted_item, seller_id: s1, is_deleted: true}
+      - input: ref('dim_date')
+        rows:
+          - {date_day: "2018-01-01"}
+          - {date_day: "2018-01-02"}
+          - {date_day: "2018-01-03"}
+          - {date_day: "2018-01-04"}
+          - {date_day: "2018-04-02"}
+          - {date_day: "2018-04-03"}
+          - {date_day: "2018-04-04"}
+    expect:
+      rows:
+        - {seller_id: s1, feature_ts: "2018-01-02 00:00:00+00", seller_orders_90d: 0, seller_late_rate_90d: null, seller_avg_delivery_days_90d: null}
+        - {seller_id: s1, feature_ts: "2018-01-03 00:00:00+00", seller_orders_90d: 2, seller_late_rate_90d: 0.0, seller_avg_delivery_days_90d: 2.5}
+        - {seller_id: s1, feature_ts: "2018-01-04 00:00:00+00", seller_orders_90d: 4, seller_late_rate_90d: 0.25, seller_avg_delivery_days_90d: 2.25}
+        - {seller_id: s1, feature_ts: "2018-04-02 00:00:00+00", seller_orders_90d: 4, seller_late_rate_90d: 0.25, seller_avg_delivery_days_90d: 2.25}
+        - {seller_id: s1, feature_ts: "2018-04-03 00:00:00+00", seller_orders_90d: 2, seller_late_rate_90d: 0.5, seller_avg_delivery_days_90d: 2.0}
+
+  - name: ml_late_delivery_training_primary_seller
+    description: >
+      Primary seller = highest-price non-deleted item, price tie -> smallest seller_id (a deleted
+      pricier item is ignored); totals sum non-deleted items; category from the primary item;
+      payment from payment_sequential = 1; is_late null when undelivered; unapproved orders dropped.
+    model: ml_late_delivery_training
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: o1, customer_sk: c1_v1, order_status: delivered, order_approved_ts_utc: "2018-01-01 10:00:00+00", order_delivered_customer_ts_utc: "2018-01-05 10:00:00+00", is_delivered: true, is_late: true, is_deleted: false}
+          - {order_id: o2, customer_sk: c1_v1, order_status: shipped, order_approved_ts_utc: "2018-01-02 10:00:00+00", order_delivered_customer_ts_utc: null, is_delivered: false, is_late: false, is_deleted: false}
+          - {order_id: o3, customer_sk: c1_v1, order_status: created, order_approved_ts_utc: null, order_delivered_customer_ts_utc: null, is_delivered: false, is_late: false, is_deleted: false}
+      - input: ref('fct_order_items')
+        rows:
+          - {order_id: o1, order_item_id: 1, product_sk: p_b, seller_sk: sb_v1, seller_id: s_b, price: 50.00, freight_value: 5.00, is_deleted: false}
+          - {order_id: o1, order_item_id: 2, product_sk: p_a, seller_sk: sa_v1, seller_id: s_a, price: 50.00, freight_value: 4.00, is_deleted: false}
+          - {order_id: o1, order_item_id: 3, product_sk: p_b, seller_sk: sc_v1, seller_id: s_c, price: 10.00, freight_value: 1.00, is_deleted: false}
+          - {order_id: o1, order_item_id: 4, product_sk: p_b, seller_sk: sz_v1, seller_id: s_z, price: 100.00, freight_value: 9.00, is_deleted: true}
+          - {order_id: o2, order_item_id: 1, product_sk: p_b, seller_sk: sb_v1, seller_id: s_b, price: 20.00, freight_value: 2.00, is_deleted: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_sk: p_a, product_category_name_english: toys}
+          - {product_sk: p_b, product_category_name_english: books}
+      - input: ref('dim_seller')
+        rows:
+          - {seller_sk: sa_v1, seller_id: s_a, seller_state: RJ, seller_zip_code_prefix: 2002}
+          - {seller_sk: sb_v1, seller_id: s_b, seller_state: MG, seller_zip_code_prefix: 3003}
+          - {seller_sk: sc_v1, seller_id: s_c, seller_state: MG, seller_zip_code_prefix: 3003}
+          - {seller_sk: sz_v1, seller_id: s_z, seller_state: PR, seller_zip_code_prefix: 3003}
+      - input: ref('dim_customer')
+        rows:
+          - {customer_sk: c1_v1, customer_state: SP, customer_zip_code_prefix: 1001}
+      - input: ref('dim_geo')
+        rows:
+          - {zip_code_prefix: 1001, lat: -23.5, lng: -46.6}
+          - {zip_code_prefix: 2002, lat: -22.9, lng: -43.2}
+          - {zip_code_prefix: 3003, lat: -19.9, lng: -43.9}
+      - input: ref('fct_payments')
+        rows:
+          - {order_id: o1, payment_sequential: 1, payment_type: credit_card, payment_installments: 3, is_deleted: false}
+          - {order_id: o1, payment_sequential: 2, payment_type: voucher, payment_installments: 1, is_deleted: false}
+          - {order_id: o2, payment_sequential: 1, payment_type: boleto, payment_installments: 1, is_deleted: false}
+    expect:
+      rows:
+        - {order_id: o1, seller_id: s_a, n_items: 3, n_sellers: 3, total_price: 110.00, total_freight: 10.00, product_category: toys, payment_type: credit_card, payment_installments: 3, is_late: true, customer_state: SP, customer_lat: -23.5, seller_state: RJ, seller_lat: -22.9}
+        - {order_id: o2, seller_id: s_b, n_items: 1, n_sellers: 1, total_price: 20.00, total_freight: 2.00, product_category: books, payment_type: boleto, payment_installments: 1, is_late: null, customer_state: SP, customer_lat: -23.5, seller_state: MG, seller_lat: -19.9}
+
+  - name: ml_demand_daily_is_modelled
+    description: >
+      Window shrunk via vars (4 days, test 2): last revenue date E = 01-08, cutoff C = 01-07,
+      window [01-03, 01-07). Series a/SP has orders on 2 of 4 days (= 50 %) -> modelled; b/SP has
+      1 of 4 in-window days (its orders on C and E don't count) -> not. Zero-filled from each
+      series' first order; orders are distinct per day; non-revenue items are ignored.
+    model: ml_demand_daily
+    overrides:
+      vars:
+        ml_demand_window_days: 4
+        ml_demand_test_days: 2
+    given:
+      - input: ref('fct_order_items')
+        rows:
+          - {order_id: a1, product_sk: p_a, order_purchase_date: "2018-01-03", is_revenue_order: true}
+          - {order_id: a1, product_sk: p_a, order_purchase_date: "2018-01-03", is_revenue_order: true}
+          - {order_id: a2, product_sk: p_a, order_purchase_date: "2018-01-05", is_revenue_order: true}
+          - {order_id: a3, product_sk: p_a, order_purchase_date: "2018-01-05", is_revenue_order: true}
+          - {order_id: b1, product_sk: p_b, order_purchase_date: "2018-01-02", is_revenue_order: true}
+          - {order_id: b2, product_sk: p_b, order_purchase_date: "2018-01-06", is_revenue_order: true}
+          - {order_id: b3, product_sk: p_b, order_purchase_date: "2018-01-07", is_revenue_order: true}
+          - {order_id: b4, product_sk: p_b, order_purchase_date: "2018-01-08", is_revenue_order: true}
+          - {order_id: c1, product_sk: p_c, order_purchase_date: "2018-01-04", is_revenue_order: false}
+          - {order_id: c2, product_sk: p_a, order_purchase_date: "2018-01-09", is_revenue_order: false}
+      - input: ref('dim_product')
+        rows:
+          - {product_sk: p_a, product_category_name_english: a}
+          - {product_sk: p_b, product_category_name_english: b}
+          - {product_sk: p_c, product_category_name_english: c}
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: a1, customer_sk: c_sp}
+          - {order_id: a2, customer_sk: c_sp}
+          - {order_id: a3, customer_sk: c_sp}
+          - {order_id: b1, customer_sk: c_sp}
+          - {order_id: b2, customer_sk: c_sp}
+          - {order_id: b3, customer_sk: c_sp}
+          - {order_id: b4, customer_sk: c_sp}
+          - {order_id: c1, customer_sk: c_sp}
+          - {order_id: c2, customer_sk: c_sp}
+      - input: ref('dim_customer')
+        rows:
+          - {customer_sk: c_sp, customer_state: SP}
+      - input: ref('dim_date')
+        rows:
+          - {date_day: "2018-01-01"}
+          - {date_day: "2018-01-02"}
+          - {date_day: "2018-01-03"}
+          - {date_day: "2018-01-04"}
+          - {date_day: "2018-01-05"}
+          - {date_day: "2018-01-06"}
+          - {date_day: "2018-01-07"}
+          - {date_day: "2018-01-08"}
+          - {date_day: "2018-01-09"}
+    expect:
+      rows:
+        - {date: "2018-01-03", product_category: a, customer_state: SP, orders: 1, is_modelled: true}
+        - {date: "2018-01-04", product_category: a, customer_state: SP, orders: 0, is_modelled: true}
+        - {date: "2018-01-05", product_category: a, customer_state: SP, orders: 2, is_modelled: true}
+        - {date: "2018-01-06", product_category: a, customer_state: SP, orders: 0, is_modelled: true}
+        - {date: "2018-01-07", product_category: a, customer_state: SP, orders: 0, is_modelled: true}
+        - {date: "2018-01-08", product_category: a, customer_state: SP, orders: 0, is_modelled: true}
+        - {date: "2018-01-02", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
+        - {date: "2018-01-03", product_category: b, customer_state: SP, orders: 0, is_modelled: false}
+        - {date: "2018-01-04", product_category: b, customer_state: SP, orders: 0, is_modelled: false}
+        - {date: "2018-01-05", product_category: b, customer_state: SP, orders: 0, is_modelled: false}
+        - {date: "2018-01-06", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
+        - {date: "2018-01-07", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
+        - {date: "2018-01-08", product_category: b, customer_state: SP, orders: 1, is_modelled: false}
