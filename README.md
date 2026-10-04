@@ -66,13 +66,24 @@ Run `make reset-bronze` first ([reset recipe](docs/runbooks/ingestion.md#reset-b
 Redpanda Console at http://127.0.0.1:8080, Spark UI at http://127.0.0.1:4040. Details, reset
 and quarantine inspection: [docs/runbooks/ingestion.md](docs/runbooks/ingestion.md).
 
+### Lakehouse (bronze → silver Delta + quality gates)
+
+```sh
+make silver      # Spark batch: cleaned, typed silver tables, SCD2 dims, rejects + rule metrics
+make quality     # Great Expectations gates; exits 1 on a critical failure
+make maintain    # OPTIMIZE ZORDER + VACUUM
+make status      # adds silver counts, rejects and "rule X rejected N rows (p %)" lines
+```
+
+Details, rejects inspection and reset: [docs/runbooks/lakehouse.md](docs/runbooks/lakehouse.md).
+
 ## Status
 
 | # | Phase | Status |
 |---|-------|--------|
 | 0 | Foundation | In progress |
 | 1 | Ingestion | In progress: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
-| 2 | Lakehouse | Planned |
+| 2 | Lakehouse | In progress: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
 | 3 | Analytics | Planned |
 | 4 | Batch ML + MLOps | Planned |
 | 5 | Real-time ML | Planned |
