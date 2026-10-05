@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -141,6 +143,8 @@ def rag_main(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if isinstance(sys.stdout, io.TextIOWrapper):  # mlflow prints emoji; Windows pipes are cp1252
+        sys.stdout.reconfigure(encoding="utf-8")
     args = parser().parse_args(argv)
     if args.command == "rag":
         return rag_main(args)

@@ -21,6 +21,16 @@ def test_enrich_cli_prints_throughput(
     assert "0 accepted, 0 rejected, 1 skipped" in capsys.readouterr().out
 
 
+def test_stdout_survives_mlflow_emoji_on_cp1252(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import sys
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # Windows pipe/file stdout
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(cli, "rag_main", lambda args: print("\U0001f3c3 View run") or 0)
+    assert cli.main(["rag", "eval"]) == 0
+
+
 def test_limit_and_all_are_exclusive() -> None:
     with pytest.raises(SystemExit):
         cli.main(["enrich", "--all", "--limit", "3"])

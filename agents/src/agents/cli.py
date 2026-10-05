@@ -1,5 +1,7 @@
 import argparse
+import io
 import os
+import sys
 import uuid
 from contextlib import nullcontext
 from typing import Any
@@ -81,6 +83,8 @@ def _eval(suite: str, provider: str, limit: int | None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if isinstance(sys.stdout, io.TextIOWrapper):  # mlflow prints emoji; Windows pipes are cp1252
+        sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(prog="agents")
     sub = parser.add_subparsers(dest="command", required=True)
     analytics = sub.add_parser("analytics", help="ask the analytics agent one question")

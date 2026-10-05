@@ -256,6 +256,18 @@ def test_cli_parses_eval_commands(suite: str, monkeypatch: pytest.MonkeyPatch) -
     assert calls == [(suite, "hosted", 10), (suite, "local", None)]
 
 
+def test_cli_stdout_survives_mlflow_emoji_on_cp1252(monkeypatch: pytest.MonkeyPatch) -> None:
+    import io
+    import sys
+
+    from agents import cli
+
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")  # Windows pipe/file stdout
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(cli, "_eval", lambda s, p, n: print("\U0001f3c3 View run"))
+    cli.main(["eval", "analytics"])
+
+
 def test_analytics_cli_honours_llm_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     from agents import cli
     from agents.analytics_agent import graph, tools
