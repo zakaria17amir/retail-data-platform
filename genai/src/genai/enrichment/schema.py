@@ -13,7 +13,6 @@ _EN_MORE = "will has have was not but all our more which their they"
 _PT = "de da do das dos em para com que o os as um uma no na nos nas e muito por mais ao se"
 EN_STOPWORDS = frozenset(f"{_EN} {_EN_MORE}".split(" "))
 PT_STOPWORDS = frozenset(_PT.split(" "))
-MIN_EN_RATIO = 0.15
 WORD = re.compile(r"[^\W\d_]+")
 
 
@@ -27,7 +26,7 @@ def _english(value: str) -> str:
     words = [w.lower() for w in WORD.findall(value)]
     en = sum(w in EN_STOPWORDS for w in words)
     pt = sum(w in PT_STOPWORDS for w in words)
-    if en < MIN_EN_RATIO * len(words) or pt >= en:
+    if en == 0 or pt >= en:
         raise PydanticCustomError("not_english", "must be written in English")
     return value
 

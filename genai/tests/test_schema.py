@@ -51,6 +51,20 @@ def test_invalid_output_has_rule_id(overrides: dict[str, object], rule_id: str) 
     assert describe_error(err.value)[0] == rule_id
 
 
+@pytest.mark.parametrize(
+    "description",
+    [  # terse English that Qwen wrote in the live pass (few stopwords)
+        "Sturdy building board ideal for DIY home improvement projects. Dimensions: 23x20x16 cm. "
+        "Weight: 738g.",
+        "A classic vinyl record for music lovers. Measures 16x11x2 cm and weighs 1.1 kg.",
+        "This professional camera lens provides 5 high-resolution photo options.",
+        "Fast processor, good memory, and modern design. Quick delivery, great value.",
+    ],
+)
+def test_terse_english_description_is_accepted(description: str) -> None:
+    Enrichment.model_validate(valid(description=description))
+
+
 def test_invalid_json_rule_id() -> None:
     with pytest.raises(ValidationError) as err:
         Enrichment.model_validate_json("not json")
