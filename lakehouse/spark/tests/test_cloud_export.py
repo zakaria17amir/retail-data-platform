@@ -1,10 +1,12 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from lakehouse_spark.cloud import entrypoint
-from lakehouse_spark.cloud.export import export_silver
+from lakehouse_spark.cloud.export import EXPORT_TABLES, export_silver
 from pyspark.sql import DataFrame, SparkSession
 
 pytestmark = pytest.mark.spark
@@ -48,8 +50,7 @@ def test_export_writes_every_row_as_parquet_with_success_marker(
     counts = export_silver(spark, root, "r1", ("sales/orders", "party/customers"))
     assert counts == {"sales/orders": 3, "party/customers": 3}
     for name, expected in tables.items():
-        leaf = name.rsplit("/", 1)[-1]
-        folder = _folder(root, leaf, "r1")
+        folder = _folder(root, name, "r1")
         files = _visible(folder)
         assert files[0] == "_SUCCESS"
         parts = files[1:]
@@ -66,18 +67,52 @@ def test_export_rerun_overwrites_only_its_run_id_with_stable_file_names(
     _silver(spark, root)
     export_silver(spark, root, "r1", ("sales/orders",))
     export_silver(spark, root, "r2", ("sales/orders",))
-    before = _visible(_folder(root, "orders", "r1"))
+    before = _visible(_folder(root, "sales/orders", "r1"))
     export_silver(spark, root, "r1", ("sales/orders",))
-    assert _visible(_folder(root, "orders", "r1")) == before
-    assert spark.read.parquet(str(_folder(root, "orders", "r1"))).count() == len(ORDERS)
-    assert spark.read.parquet(str(_folder(root, "orders", "r2"))).count() == len(ORDERS)
+    assert _visible(_folder(root, "sales/orders", "r1")) == before
+    assert spark.read.parquet(str(_folder(root, "sales/orders", "r1"))).count() == len(ORDERS)
+    assert spark.read.parquet(str(_folder(root, "sales/orders", "r2"))).count() == len(ORDERS)
     staging = Path(urlparse(root).path) / "export" / "_staging"
     assert not [p for p in staging.rglob("*") if p.is_file()]
 
 
+def test_export_mirrors_silver_layout_and_includes_dq_history(
+    spark: SparkSession, root: str
+) -> None:
+    assert EXPORT_TABLES[-2:] == ("_rule_metrics", "_dq_results")
+    spark.createDataFrame(
+        [("r0", "sales/orders", "cdc_exact_duplicate")],
+        "run_id string, table string, rule_id string",
+    ).write.format("delta").save(f"{root}/silver/_rule_metrics")
+    spark.createDataFrame(
+        [("q1", "sales/orders", "not_null")], "run_id string, table string, expectation string"
+    ).write.format("delta").save(f"{root}/silver/_dq_results")
+    _silver(spark, root)
+    assert export_silver(spark, root, "r1") == {
+        "party/customers": 3,
+        "sales/orders": 3,
+        "_rule_metrics": 1,
+        "_dq_results": 1,
+    }
+    for table in ("sales/orders", "_rule_metrics", "_dq_results"):
+        assert _visible(_folder(root, table, "r1"))[0] == "_SUCCESS"
+
+
+def test_export_writes_timestamps_as_utc_micros_not_int96(spark: SparkSession, root: str) -> None:
+    ts = datetime(2017, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)  # noqa: UP017 - Python 3.10 image
+    spark.createDataFrame(
+        [("o1", ts)], "order_id string, order_purchase_ts_utc timestamp"
+    ).write.format("delta").save(f"{root}/silver/sales/orders")
+    export_silver(spark, root, "r1", ("sales/orders",))
+    part = _folder(root, "sales/orders", "r1") / "part-00000.parquet"
+    field = pq.read_schema(part).field("order_purchase_ts_utc")
+    assert field.type == pa.timestamp("us", tz="UTC")
+    assert pq.read_table(part).column("order_purchase_ts_utc")[0].as_py() == ts
+
+
 def test_export_skips_missing_tables(spark: SparkSession, root: str) -> None:
     assert export_silver(spark, root, "r1", ("events/clickstream",)) == {}
-    assert not _folder(root, "clickstream", "r1").exists()
+    assert not _folder(root, "events/clickstream", "r1").exists()
 
 
 def test_entrypoint_export_exports_all_silver_tables_present(
@@ -85,8 +120,8 @@ def test_entrypoint_export_exports_all_silver_tables_present(
 ) -> None:
     _silver(spark, root)
     assert entrypoint.main(["export", "--run-id", "r1", "--root", root]) == 0
-    assert _visible(_folder(root, "customers", "r1"))[0] == "_SUCCESS"
-    assert _visible(_folder(root, "orders", "r1"))[0] == "_SUCCESS"
+    assert _visible(_folder(root, "party/customers", "r1"))[0] == "_SUCCESS"
+    assert _visible(_folder(root, "sales/orders", "r1"))[0] == "_SUCCESS"
 
 
 def test_entrypoint_silver_runs_every_table_with_the_given_run_id(
