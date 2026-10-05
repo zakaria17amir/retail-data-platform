@@ -1,7 +1,7 @@
 # ADR-0008: GenAI and agents — LiteLLM gateway, local Ollama, pgvector, guarded LangGraph agents
 
 ## Status
-Accepted. Code and mocked-LLM tests done; **no live model numbers yet** (the user deferred the model downloads).
+Accepted. Live pass on the RTX 4050 (qwen2.5:7b-instruct Q4 + bge-m3 via LiteLLM), numbers under "Measured".
 
 ## Context
 Phase 6 adds enrichment, hybrid RAG and two LangGraph agents on one laptop: an RTX 4050 (6 GB) serves every call.
@@ -13,9 +13,10 @@ Phase 6 adds enrichment, hybrid RAG and two LangGraph agents on one laptop: an R
   and there are no router fallbacks, so nothing reaches a hosted model silently. Embeddings always stay local.
 - **GPU budget:** Qwen2.5-7B Q4 (~4.7 GB) and bge-m3 (~1.2 GB) do not fit 6 GB together, so Ollama swaps them.
   `chat`/`judge` set `num_ctx: 8192` in `litellm/config.yaml`: Ollama's 2-4k default silently truncates from the
-  start of the prompt (system prompt first). Qwen at 8k is ~5.3 GB (estimate; measure with `ollama ps`).
+  start of the prompt (system prompt first). Qwen at 8k is 5.4 GB in `ollama ps`, split 24 %/76 % CPU/GPU.
   Batch jobs never interleave: `rag index` runs all review summaries (chat), then all embeddings (batches of 64).
-  Default enrichment is **500 products**, stratified by category; the spec's 5k is ≈ 8 h at ~35 tok/s (estimate).
+  Default enrichment is **500 products**, stratified by category: measured 19.4 tok/s, 3.8 s/product, so
+  500 ≈ 31 min and the spec's 5k ≈ 5 h.
 - **pgvector:** Postgres → `pgvector/pgvector:0.8.6-pg16-bookworm` on the existing volume. Bookworm keeps the
   glibc 2.36 of `postgres:16.6`, so text-index collations stay valid (`-trixie` would not); 16.6 → 16.15 is a
   minor upgrade, same data format. RAG lives in schema `rag`, shop tables in `shop`, both outside `olist_cdc`.
@@ -40,9 +41,22 @@ Phase 6 adds enrichment, hybrid RAG and two LangGraph agents on one laptop: an R
 - **Evals:** analytics 60 golden cases with expected answers computed from gold through the agent's own tools
   (`agents eval build-analytics`); shopping 40 tool-selection + 20 adversarial; RAG 100 synthetic LLM-written queries
   labelled with their source product. The judge is the same local Qwen unless `--provider hosted` (self-preference
-  bias). The only result is a harness replay (60/60 reference calls reach the expected answer): not a model score.
+  bias).
+
+## Measured (2026-10-05, local Qwen, `--limit 10` evals)
+| Step | Result |
+|---|---|
+| Chat via LiteLLM | warm 142 tokens in 7.2 s (≈ 20 tok/s; Ollama decode 21.4 tok/s); first call 84 s (model load) |
+| Enrichment 200 | 196 accepted, 4 rejected (all `description:not_english`, all terse English: check fixed), 753 s, 19.4 tok/s; re-run 200 skipped, Delta versions unchanged |
+| RAG index | 196 products, 536 chunks (21 review summaries), 536 embedded in 144 s; re-run 0 summaries / 0 embedded / 0 pruned |
+| RAG eval (100 queries) | Recall@10 / MRR: vector 0.99 / 0.895, text 0.02 / 0.02, hybrid 0.98 / 0.885 |
+| Analytics eval | execution accuracy 0.70, judge 3.8/5, 0 errors, 11.4 s/case, wall 139 s (misses: filter, ratio, sql_marts) |
+| Shopping eval (2 tool + 8 adversarial) | tool selection 1.0, refusal 0.75, attempted forbidden 0.125, false refusal 0, faithfulness 3.75, wall 125 s |
+| HITL order | approve wrote 1 order/item/payment, total 65.06 = quote; reject wrote 0 rows |
 
 ## Consequences
-- 7B tool calling is unproven; hosted aliases allow a comparison. The cost guard counts an ungrouped aggregate as
+- 7B tool calling works for single-metric questions; filters, ratios and raw SQL are where it fails. The text arm
+  of hybrid search is near-useless on paraphrased queries (`websearch_to_tsquery` ANDs every term); an OR-ed query
+  measured text 0.90 / 0.61 but hybrid MRR 0.78, so it is not adopted. The cost guard counts an ungrouped aggregate as
   1 row, so `query_metric` for `aov` without group-by passes (160.2412) and real cross products are still rejected.
   Rejected: Langfuse, router fallbacks.

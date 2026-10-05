@@ -136,8 +136,10 @@ uv run --project agents agents analytics "What was revenue by year?"
 make agents-eval ARGS="analytics --limit 10"                      # golden sets -> MLflow genai-evals
 ```
 
-The Postgres image moves to pgvector on the existing volume; do the checked swap once first. No live
-model numbers exist yet: the model downloads are pending. Downloads, the swap, hosted mode and limits:
+The Postgres image moves to pgvector on the existing volume; do the checked swap once first. Measured on
+the RTX 4050 (local Qwen, ≈ 20 tok/s): enrichment 196/200 accepted in 12.5 min; RAG Recall@10 0.98 hybrid;
+analytics eval execution accuracy 0.70; shopping tool selection 1.0 ([ADR-0008](docs/adr/0008-genai-agents.md)).
+Downloads, the swap, hosted mode and limits:
 [docs/runbooks/genai.md](docs/runbooks/genai.md).
 
 ## Status
@@ -150,7 +152,7 @@ model numbers exist yet: the model downloads are pending. Downloads, the swap, h
 | 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
 | 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
 | 5 | Real-time ML | In progress: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
-| 6 | GenAI & agents | In progress: code + tests done (LiteLLM → Ollama, LLM catalogue enrichment, pgvector hybrid RAG, LangGraph analytics agent over MetricFlow + guarded SQL, shopping agent with human-approved orders, golden-set evals, Chainlit); live runs pending model download ([ADR-0008](docs/adr/0008-genai-agents.md)) |
+| 6 | GenAI & agents | In progress: code + tests done (LiteLLM → Ollama, LLM catalogue enrichment, pgvector hybrid RAG, LangGraph analytics agent over MetricFlow + guarded SQL, shopping agent with human-approved orders, golden-set evals, Chainlit); live pass on local Qwen: 19.4 tok/s enrichment, RAG hybrid Recall@10 0.98 / MRR 0.885, analytics execution accuracy 0.70, shopping tool selection 1.0; DAGs and Chainlit not yet run live ([ADR-0008](docs/adr/0008-genai-agents.md)) |
 | 7 | Cloud | Planned |
 | 8 | Polish | Planned |
 

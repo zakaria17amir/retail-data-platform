@@ -7,8 +7,9 @@ LiteLLM gateway (`litellm`, :4000) → Ollama on the host GPU. Catalogue enrichm
 (`make gold`; the analytics agent reads `analytics/target/semantic_manifest.json` and `manifest.json`),
 and the `retail-ml` image for `serving` (`make ml-build`). Run from the repo root in Git Bash.
 
-**Status:** code and mocked-LLM tests only. No live run has happened yet (no models downloaded), so
-this runbook gives the commands and the expected output from the code, not measured numbers.
+**Status:** live pass done on 2026-10-05 (RTX 4050, local Qwen + bge-m3); measured numbers in
+[ADR-0008](../adr/0008-genai-agents.md) ("Measured") and inline below. It covered chat, enrichment, RAG,
+both agents (CLI) and their evals; not yet live: the DAGs, Chainlit and the failure modes.
 
 ## 1. Downloads (once)
 
@@ -100,8 +101,9 @@ so a crash loses at most one batch. Idempotent on `(product_id, prompt_hash)`: a
 everything skipped and makes no LLM calls. The prompt hash covers the product facts, reviews and schema,
 so changed reviews re-enrich a product (readers take the latest `enriched_at`). Rejects (after 3
 attempts with the validation error fed back) go to `silver/_rejects/product_enriched` with `rule_id`
-(e.g. `description:not_english`, `tags:too_short`) and are not retried unless the prompt changes. The
-rate estimate behind the 500 default is ~35 tok/s (5k ≈ 8 h, so 500 ≈ 50 min); not measured yet.
+(e.g. `description:not_english`, `tags:too_short`) and are not retried unless the prompt changes.
+Measured (`--limit 200`): `196 accepted, 4 rejected, 0 skipped in 753.1 s: 0.266 products/s, 19.4 tok/s`,
+so 500 ≈ 31 min; the re-run printed `200 skipped in 0.0 s` and left both Delta versions unchanged.
 Traces go to MLflow experiment `genai` (tags `prompt_hash`, `model_alias`) when `MLFLOW_TRACKING_URI`
 is set.
 
@@ -118,7 +120,10 @@ make rag ARGS=eval                          # Recall@10 + MRR per mode; MLflow r
 should print 0 summaries, 0 embedded, 0 pruned. It indexes only enriched products (doc, one LLM review
 summary, reviews). Summaries are made once per product; delete a `review_summary` row to refresh it.
 `eval` writes `genai/eval_data/rag_queries.jsonl` (100 synthetic LLM-written queries, product id as
-label) only if missing; delete it to regenerate, commit it after the first real run.
+label) only if missing; delete it to regenerate (committed from the first live run). It logs to MLflow only
+when `MLFLOW_TRACKING_URI` is set. Measured on 196 products: index `536 chunks, 21 summaries, 536 embedded
+in 143.6 s`, re-run `0 summaries, 0 embedded, 0 pruned`; eval Recall@10 / MRR vector 0.99 / 0.895, text
+0.02 / 0.02, hybrid 0.98 / 0.885 (query generation 8 min, eval alone 17 s).
 
 ## 6. Shopping side tables
 
@@ -140,6 +145,10 @@ Analytics answers end with the metric/SQL citation and a chart path (`CHART_DIR`
 quote of any order and asks `Approve this order? [y/N]`; only `y` writes (as `shop_writer`, status
 `created`). With `POSTGRES_DSN` set, memory is the Postgres checkpointer (schema `agents`); pass
 `--thread <id>` to continue a conversation.
+
+Measured: "What was revenue by year?" → `query_metric`, correct per-year revenue with SQL and chart, 3 LLM
+calls, ~11 s in the graph (97 s wall with process start-up). A one-line "buy 1 unit of <product_id>"
+quoted and, on `y`, wrote 1 order/item/payment (total 65.06 = quote, 29 s); on `n` it wrote nothing.
 
 ## 8. Chainlit UI
 
@@ -164,6 +173,10 @@ categories. Each run prints a metrics JSON and logs to MLflow experiment `genai-
 place orders (approvals are answered `{"approved": false}`). The judge is the local Qwen unless
 `--provider hosted`.
 
+Measured `--limit 10` (local Qwen, judge = same Qwen): analytics execution accuracy 0.70, judge 3.8/5,
+11.4 s/case, wall 139 s; shopping (2 tool + 8 adversarial) tool selection 1.0, refusal 0.75, attempted
+forbidden 0.125, false refusal 0, faithfulness 3.75, wall 125 s.
+
 ## 10. Hosted mode (optional)
 
 Set `OPENAI_API_KEY` (alias `chat-hosted` = `openai/gpt-4.1-mini`) and/or `ANTHROPIC_API_KEY`
@@ -179,8 +192,8 @@ summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals tak
   do not fit 6 GB together; close other GPU apps. If Ollama falls back to CPU, throughput drops sharply.
 - **Context window / VRAM.** `litellm/config.yaml` sets `num_ctx: 8192` on `chat` and `judge`:
   Ollama's 2-4k default truncates the prompt from the start (the system prompt goes first, silently;
-  the server log says "truncating input prompt"). qwen2.5:7b Q4 with an 8k context is ≈ 5.3 GB
-  (estimate, check `ollama ps`), so on a 6 GB card keep bge-m3 swapped out during chat batches (do not
+  the server log says "truncating input prompt"). qwen2.5:7b Q4 with an 8k context is 5.4 GB
+  in `ollama ps` (measured: 24 %/76 % CPU/GPU, ≈ 20 tok/s), so on a 6 GB card keep bge-m3 swapped out during chat batches (do not
   run `rag index`/embeddings alongside enrichment or an agent). If it spills to CPU, lower `num_ctx`
   (e.g. 6144) and restart litellm.
 - **Model swap latency.** The first call after a swap waits for the model to load. Batch jobs avoid
@@ -195,12 +208,15 @@ summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals tak
 - **pgvector tests skip** ("the pgvector `vector` extension is not available") until the swap; litellm's
   import-time `load_dotenv` makes tests pick up `POSTGRES_DSN`/`RAG_DSN` from `.env`. In CI they run
   against a pgvector service container and any skip fails the `lint-test` job.
-- **Many `description:not_english` rejects:** the English check (stopword ratio ≥ 0.15) is untested on
-  real Qwen output; inspect `silver/_rejects/product_enriched`.
+- **`description:not_english` rejects:** the check needs ≥ 1 English stopword and more English than
+  Portuguese ones. Inspect `silver/_rejects/product_enriched`.
 
 ## Known limits
 
-- No live numbers yet (enrichment rate, Recall@10/MRR, eval scores).
+- Text search ANDs every query term (`websearch_to_tsquery`), so on paraphrased queries it finds almost
+  nothing (Recall@10 0.02) and hybrid ≈ vector.
+- Qwen at `num_ctx` 8192 is 5.4 GB and runs 24 %/76 % CPU/GPU on the 6 GB card (≈ 20 tok/s); the first
+  call after a load takes ~85 s.
 - `get_recommendations` emits no `product_view` events, so `/recommend` always serves cold-start
   popularity (`strategy` is returned).
 - The UI "Customer id" setting and the CLI `--customer` are free text, not authentication: "own orders
