@@ -1,5 +1,7 @@
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import pyarrow as pa
@@ -108,6 +110,48 @@ def test_export_writes_timestamps_as_utc_micros_not_int96(spark: SparkSession, r
     field = pq.read_schema(part).field("order_purchase_ts_utc")
     assert field.type == pa.timestamp("us", tz="UTC")
     assert pq.read_table(part).column("order_purchase_ts_utc")[0].as_py() == ts
+
+
+def _manifest(root: str, run_id: str) -> Any:
+    path = Path(urlparse(root).path) / "export" / "_manifests" / f"{run_id}.json"
+    return json.loads(path.read_text())
+
+
+def _parts(root: str, table: str, run_id: str) -> int:
+    return len([f for f in _visible(_folder(root, table, run_id)) if f.startswith("part-")])
+
+
+def test_export_writes_a_run_manifest_of_parts_and_rows_outside_the_snowpipe_prefix(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    spark.createDataFrame([], "run_id string, table string, rule_id string").write.format(
+        "delta"
+    ).save(f"{root}/silver/_rule_metrics")
+    tables = ("sales/orders", "party/customers", "_rule_metrics", "events/clickstream")
+    export_silver(spark, root, "r1", tables)
+    assert _manifest(root, "r1") == {
+        "run_id": "r1",
+        "tables": {
+            "sales/orders": {"parts": _parts(root, "sales/orders", "r1"), "rows": 3},
+            "party/customers": {"parts": _parts(root, "party/customers", "r1"), "rows": 3},
+            "_rule_metrics": {"parts": _parts(root, "_rule_metrics", "r1"), "rows": 0},
+        },
+    }
+    assert _parts(root, "sales/orders", "r1") >= 1
+    assert not list((Path(urlparse(root).path) / "export" / "silver").rglob("*.json"))
+
+
+def test_export_rerun_rewrites_the_same_manifest_and_keeps_other_runs(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    export_silver(spark, root, "r1", ("sales/orders",))
+    first = _manifest(root, "r1")
+    export_silver(spark, root, "r2", ("sales/orders", "party/customers"))
+    export_silver(spark, root, "r1", ("sales/orders",))
+    assert _manifest(root, "r1") == first
+    assert set(_manifest(root, "r2")["tables"]) == {"sales/orders", "party/customers"}
 
 
 def test_export_skips_missing_tables(spark: SparkSession, root: str) -> None:

@@ -12,10 +12,15 @@
 {%- endmacro %}
 
 {% macro snowflake__latest_export(relation) -%}
+    {%- set run_id = var('export_run_id', none) -%}
     (
         select * from {{ relation }}
+        {%- if run_id %}
+        where split_part(_export_file, '/', -2) = '{{ run_id | string | replace("'", "''") }}'
+        {%- else %}
         qualify lpad(split_part(_export_file, '/', -2), 64, '0')
             = max(lpad(split_part(_export_file, '/', -2), 64, '0')) over ()
+        {%- endif %}
     ) as latest_export
 {%- endmacro %}
 

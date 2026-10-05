@@ -31,6 +31,13 @@ jobs:
       EMR_JOB_ROLE_ARN: ${{ vars.EMR_JOB_ROLE_ARN }}
       RUN_ID: ${{ github.run_id }}
       JOB_TIMEOUT_MINUTES: "45"
+      # same pins as DBT_SNOWFLAKE in the Makefile; its env also has snowflake-connector-python
+      DBT_ENV: uv tool run --python 3.12 --exclude-newer 2026-09-27T00:00:00Z --from dbt-core==1.12.5 --with dbt-snowflake==1.12.1
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -86,21 +93,30 @@ jobs:
           run_task silver
           run_task export
 
-      # Snowpipe ingests the export asynchronously (S3 event -> SQS); give it time before dbt reads SILVER
+      # Snowpipe loads the export asynchronously (S3 event -> SQS). The export's manifest lists every
+      # table's parts and rows: poll Snowflake until all of them are loaded, or fail after the timeout
       - name: wait for Snowpipe
         env:
-          SNOWPIPE_WAIT_SECONDS: ${{ vars.SNOWPIPE_WAIT_SECONDS || '180' }}
-        run: sleep "$SNOWPIPE_WAIT_SECONDS"
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWPIPE_TIMEOUT_SECONDS: ${{ vars.SNOWPIPE_TIMEOUT_SECONDS || '900' }}
+          PYTHONPATH: lakehouse/spark/src
+        run: |
+          aws s3 cp "s3://$LAKEHOUSE_BUCKET/export/_manifests/$RUN_ID.json" manifest.json
+          # shellcheck disable=SC2086 # DBT_ENV is a word list
+          if $DBT_ENV python -m lakehouse_spark.cloud.snowpipe_wait manifest.json --timeout "$SNOWPIPE_TIMEOUT_SECONDS"
+          then result=loaded; else result=failed; fi
+          echo "| Snowpipe run $RUN_ID | $result |" >> "$GITHUB_STEP_SUMMARY"
+          [ "$result" = loaded ]
 
+      # dbt reads exactly this run (latest_export); unit tests use duckdb SQL and run in ci.yml
       - name: dbt build --target snowflake
         env:
-          SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
-          SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
-          SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        working-directory: analytics
         run: |
-          if make cloud-dbt; then result=success; else result=failed; fi
-          echo "| dbt build (snowflake) | $result |" >> "$GITHUB_STEP_SUMMARY"
+          # shellcheck disable=SC2086 # DBT_ENV is a word list
+          if $DBT_ENV dbt deps &&
+            $DBT_ENV dbt build --target snowflake --exclude-resource-type unit_test --vars "{export_run_id: '$RUN_ID'}"
+          then result=success; else result=failed; fi
+          echo "| dbt build (snowflake, run $RUN_ID) | $result |" >> "$GITHUB_STEP_SUMMARY"
           [ "$result" = success ]
