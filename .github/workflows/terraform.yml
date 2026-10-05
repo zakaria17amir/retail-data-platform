@@ -1,0 +1,118 @@
+name: terraform
+
+on:
+  pull_request:
+    paths: ["terraform/**", ".tflint.hcl", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["terraform/**", ".tflint.hcl", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.3
+          terraform_wrapper: false
+      - uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6 # v4.1.1
+        with:
+          tflint_version: v0.64.0
+          checksums: cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
+      # fmt -check, init -backend=false + validate per root, tflint (.tflint.hcl, aws ruleset 0.49.0), terraform test
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
+        run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && make cloud-validate
+
+  # The OIDC roles trust only environment `cloud` (deployment branches: main), so a pull_request run can
+  # never assume them (by design): plan runs on push to main / manual dispatch, in environment `cloud`.
+  plan-skipped:
+    needs: validate
+    if: github.event_name == 'pull_request' || vars.AWS_PLAN_ROLE_ARN == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            why="pull_request runs cannot assume the OIDC plan role (trust: environment cloud only)"
+          else
+            why="repository variable AWS_PLAN_ROLE_ARN is not set"
+          fi
+          echo "::notice title=terraform plan skipped::$why"
+          printf '### terraform plan skipped\n%s; validate/tflint ran.\n' "$why" >> "$GITHUB_STEP_SUMMARY"
+
+  plan:
+    needs: validate
+    if: github.event_name != 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: cloud
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      TF_INPUT: "0"
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_LOCK_TABLE: ${{ vars.TF_LOCK_TABLE }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      TFVARS_DEMO: ${{ secrets.TFVARS_DEMO }}
+      TFVARS_SNOWFLAKE: ${{ secrets.TFVARS_SNOWFLAKE }}
+      HAS_SNOWFLAKE_KEY: ${{ secrets.SNOWFLAKE_TF_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.16.3
+          terraform_wrapper: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      # -lock=false: the plan role is read-only (no lock table/object writes) and must not leave a stale lock.
+      # The plan is printed to a PUBLIC log: alert_email, serving_allowed_cidr and the Snowflake account
+      # vars are sensitive = true, so they show as (sensitive value); ARNs still carry the account id.
+      - name: plan aws/envs/demo
+        working-directory: terraform/aws/envs/demo
+        run: |
+          printf '%s\n' "$TFVARS_DEMO" > terraform.tfvars
+          terraform init -input=false -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=aws/envs/demo/terraform.tfstate" -backend-config="region=$AWS_REGION" \
+            -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="use_lockfile=true" -backend-config="encrypt=true"
+          terraform plan -lock=false -no-color
+          echo "- aws/envs/demo: plan ran" >> "$GITHUB_STEP_SUMMARY"
+      - name: plan snowflake
+        if: env.TFVARS_SNOWFLAKE != '' && env.HAS_SNOWFLAKE_KEY == 'true'
+        working-directory: terraform/snowflake
+        env:
+          TF_VAR_private_key: ${{ secrets.SNOWFLAKE_TF_PRIVATE_KEY }}
+        run: |
+          printf '%s\n' "$TFVARS_SNOWFLAKE" > terraform.tfvars
+          terraform init -input=false -backend-config="bucket=$TF_STATE_BUCKET" \
+            -backend-config="key=snowflake/terraform.tfstate" -backend-config="region=$AWS_REGION" \
+            -backend-config="dynamodb_table=$TF_LOCK_TABLE" -backend-config="encrypt=true"
+          terraform plan -lock=false -no-color
+          echo "- snowflake: plan ran" >> "$GITHUB_STEP_SUMMARY"
+      - if: env.TFVARS_SNOWFLAKE == '' || env.HAS_SNOWFLAKE_KEY != 'true'
+        run: |
+          echo "::notice title=snowflake plan skipped::secrets TFVARS_SNOWFLAKE / SNOWFLAKE_TF_PRIVATE_KEY are not set"
+          echo "- snowflake: plan skipped (secrets TFVARS_SNOWFLAKE / SNOWFLAKE_TF_PRIVATE_KEY not set)" >> "$GITHUB_STEP_SUMMARY"

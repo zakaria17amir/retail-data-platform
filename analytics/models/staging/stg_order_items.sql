@@ -11,4 +11,4 @@ select
     shipping_limit_ts_local,
     shipping_limit_ts_utc,
     _silver_loaded_at
-from {{ source('silver', 'order_items') }}
+from {{ latest_export(source('silver', 'order_items')) }}

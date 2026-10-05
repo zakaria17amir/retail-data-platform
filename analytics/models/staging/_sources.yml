@@ -2,8 +2,10 @@ sources:
   - name: silver
     description: >
       Silver Delta tables (Phase 2 silver contract). On duckdb each table is read with delta_scan
-      from MinIO; on snowflake it resolves to the `silver` schema of SNOWFLAKE_DATABASE.
-    schema: silver
+      from MinIO; on snowflake it resolves to RETAIL.SILVER.<TABLE>, loaded by Snowpipe from the
+      Parquet export of each run.
+    database: "{{ 'RETAIL' if target.type == 'snowflake' else target.database }}"
+    schema: "{{ 'SILVER' if target.type == 'snowflake' else 'silver' }}"
     config:
       loaded_at_field: _silver_loaded_at
       freshness:
@@ -162,7 +164,10 @@ sources:
             data_tests: [not_null, dbt_utils.at_least_one]
 
       - name: dq_results
-        description: Silver quality check outcomes per run/table/expectation (append-only, written by quality).
+        description: >
+          Silver quality check outcomes per run/table/expectation (append-only, written by quality).
+          Quality runs only locally / from Airflow, so on snowflake this table has no producer and
+          stays empty: at_least_one only warns there.
         config:
           freshness: null
           meta:
@@ -173,4 +178,8 @@ sources:
                 combination_of_columns: [run_id, '"table"', expectation]
         columns:
           - name: run_id
-            data_tests: [not_null, dbt_utils.at_least_one]
+            data_tests:
+              - not_null
+              - dbt_utils.at_least_one:
+                  config:
+                    severity: "{{ 'warn' if target.type == 'snowflake' else 'error' }}"

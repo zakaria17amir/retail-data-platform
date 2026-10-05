@@ -7,4 +7,4 @@ select
     rows_rejected,
     pct_rejected,
     run_ts
-from {{ source('silver', 'rule_metrics') }}
+from {{ latest_export(source('silver', 'rule_metrics')) }}

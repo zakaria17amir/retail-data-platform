@@ -1,0 +1,182 @@
+import json
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+from lakehouse_spark.cloud import entrypoint
+from lakehouse_spark.cloud.export import EXPORT_TABLES, export_silver
+from pyspark.sql import DataFrame, SparkSession
+
+pytestmark = pytest.mark.spark
+
+ORDERS = [("o1", "delivered", False), ("o2", "canceled", True), ("o3", "shipped", False)]
+CUSTOMERS = [
+    ("c1", "SP", date(2017, 1, 1), date(2017, 6, 1), False),
+    ("c1", "RJ", date(2017, 6, 1), None, True),
+    ("c2", "MG", date(2017, 1, 1), None, True),
+]
+
+
+def _silver(spark: SparkSession, root: str) -> dict[str, DataFrame]:
+    tables = {
+        "sales/orders": spark.createDataFrame(
+            ORDERS, "order_id string, order_status string, _is_deleted boolean"
+        ),
+        "party/customers": spark.createDataFrame(
+            CUSTOMERS,
+            "customer_id string, customer_state string, valid_from date, valid_to date, "
+            "is_current boolean",
+        ),
+    }
+    for name, df in tables.items():
+        df.write.format("delta").save(f"{root}/silver/{name}")
+    return tables
+
+
+def _folder(root: str, table: str, run_id: str) -> Path:
+    return Path(urlparse(root).path) / "export" / "silver" / table / run_id
+
+
+def _visible(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir() if not p.name.startswith("."))
+
+
+def test_export_writes_every_row_as_parquet_with_success_marker(
+    spark: SparkSession, root: str
+) -> None:
+    tables = _silver(spark, root)
+    counts = export_silver(spark, root, "r1", ("sales/orders", "party/customers"))
+    assert counts == {"sales/orders": 3, "party/customers": 3}
+    for name, expected in tables.items():
+        folder = _folder(root, name, "r1")
+        files = _visible(folder)
+        assert files[0] == "_SUCCESS"
+        parts = files[1:]
+        assert parts and all(f.startswith("part-") and f.endswith(".parquet") for f in parts)
+        exported = spark.read.parquet(str(folder))
+        assert exported.schema == expected.schema
+        assert exported.exceptAll(expected).count() == 0
+        assert expected.exceptAll(exported).count() == 0
+
+
+def test_export_rerun_overwrites_only_its_run_id_with_stable_file_names(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    export_silver(spark, root, "r1", ("sales/orders",))
+    export_silver(spark, root, "r2", ("sales/orders",))
+    before = _visible(_folder(root, "sales/orders", "r1"))
+    export_silver(spark, root, "r1", ("sales/orders",))
+    assert _visible(_folder(root, "sales/orders", "r1")) == before
+    assert spark.read.parquet(str(_folder(root, "sales/orders", "r1"))).count() == len(ORDERS)
+    assert spark.read.parquet(str(_folder(root, "sales/orders", "r2"))).count() == len(ORDERS)
+    staging = Path(urlparse(root).path) / "export" / "_staging"
+    assert not [p for p in staging.rglob("*") if p.is_file()]
+
+
+def test_export_mirrors_silver_layout_and_includes_dq_history(
+    spark: SparkSession, root: str
+) -> None:
+    assert EXPORT_TABLES[-2:] == ("_rule_metrics", "_dq_results")
+    spark.createDataFrame(
+        [("r0", "sales/orders", "cdc_exact_duplicate")],
+        "run_id string, table string, rule_id string",
+    ).write.format("delta").save(f"{root}/silver/_rule_metrics")
+    spark.createDataFrame(
+        [("q1", "sales/orders", "not_null")], "run_id string, table string, expectation string"
+    ).write.format("delta").save(f"{root}/silver/_dq_results")
+    _silver(spark, root)
+    assert export_silver(spark, root, "r1") == {
+        "party/customers": 3,
+        "sales/orders": 3,
+        "_rule_metrics": 1,
+        "_dq_results": 1,
+    }
+    for table in ("sales/orders", "_rule_metrics", "_dq_results"):
+        assert _visible(_folder(root, table, "r1"))[0] == "_SUCCESS"
+
+
+def test_export_writes_timestamps_as_utc_micros_not_int96(spark: SparkSession, root: str) -> None:
+    ts = datetime(2017, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)  # noqa: UP017 - Python 3.10 image
+    spark.createDataFrame(
+        [("o1", ts)], "order_id string, order_purchase_ts_utc timestamp"
+    ).write.format("delta").save(f"{root}/silver/sales/orders")
+    export_silver(spark, root, "r1", ("sales/orders",))
+    part = _folder(root, "sales/orders", "r1") / "part-00000.parquet"
+    field = pq.read_schema(part).field("order_purchase_ts_utc")
+    assert field.type == pa.timestamp("us", tz="UTC")
+    assert pq.read_table(part).column("order_purchase_ts_utc")[0].as_py() == ts
+
+
+def _manifest(root: str, run_id: str) -> Any:
+    path = Path(urlparse(root).path) / "export" / "_manifests" / f"{run_id}.json"
+    return json.loads(path.read_text())
+
+
+def _parts(root: str, table: str, run_id: str) -> int:
+    return len([f for f in _visible(_folder(root, table, run_id)) if f.startswith("part-")])
+
+
+def test_export_writes_a_run_manifest_of_parts_and_rows_outside_the_snowpipe_prefix(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    spark.createDataFrame([], "run_id string, table string, rule_id string").write.format(
+        "delta"
+    ).save(f"{root}/silver/_rule_metrics")
+    tables = ("sales/orders", "party/customers", "_rule_metrics", "events/clickstream")
+    export_silver(spark, root, "r1", tables)
+    assert _manifest(root, "r1") == {
+        "run_id": "r1",
+        "tables": {
+            "sales/orders": {"parts": _parts(root, "sales/orders", "r1"), "rows": 3},
+            "party/customers": {"parts": _parts(root, "party/customers", "r1"), "rows": 3},
+            "_rule_metrics": {"parts": _parts(root, "_rule_metrics", "r1"), "rows": 0},
+        },
+    }
+    assert _parts(root, "sales/orders", "r1") >= 1
+    assert not list((Path(urlparse(root).path) / "export" / "silver").rglob("*.json"))
+
+
+def test_export_rerun_rewrites_the_same_manifest_and_keeps_other_runs(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    export_silver(spark, root, "r1", ("sales/orders",))
+    first = _manifest(root, "r1")
+    export_silver(spark, root, "r2", ("sales/orders", "party/customers"))
+    export_silver(spark, root, "r1", ("sales/orders",))
+    assert _manifest(root, "r1") == first
+    assert set(_manifest(root, "r2")["tables"]) == {"sales/orders", "party/customers"}
+
+
+def test_export_skips_missing_tables(spark: SparkSession, root: str) -> None:
+    assert export_silver(spark, root, "r1", ("events/clickstream",)) == {}
+    assert not _folder(root, "events/clickstream", "r1").exists()
+
+
+def test_entrypoint_export_exports_all_silver_tables_present(
+    spark: SparkSession, root: str
+) -> None:
+    _silver(spark, root)
+    assert entrypoint.main(["export", "--run-id", "r1", "--root", root]) == 0
+    assert _visible(_folder(root, "party/customers", "r1"))[0] == "_SUCCESS"
+    assert _visible(_folder(root, "sales/orders", "r1"))[0] == "_SUCCESS"
+
+
+def test_entrypoint_silver_runs_every_table_with_the_given_run_id(
+    spark: SparkSession, root: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from lakehouse_spark.silver import job
+    from lakehouse_spark.silver.tables import TABLES
+
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        job, "run_table", lambda _spark, spec, r, run_id: calls.append((spec.name, r, run_id))
+    )
+    assert entrypoint.main(["silver", "--run-id", "r9", "--root", root]) == 0
+    assert calls == [(spec.name, root, "r9") for spec in TABLES]

@@ -9,4 +9,4 @@ select
     _source_ts,
     _is_deleted,
     _silver_loaded_at
-from {{ source('silver', 'geolocation_points') }}
+from {{ latest_export(source('silver', 'geolocation_points')) }}

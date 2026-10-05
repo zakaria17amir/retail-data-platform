@@ -23,10 +23,14 @@ retail:
     snowflake:
       type: snowflake
       account: "{{ env_var('SNOWFLAKE_ACCOUNT', '') }}"
-      user: "{{ env_var('SNOWFLAKE_USER', '') }}"
-      password: "{{ env_var('SNOWFLAKE_PASSWORD', '') }}"
-      role: "{{ env_var('SNOWFLAKE_ROLE', '') }}"
-      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', '') }}"
-      database: "{{ env_var('SNOWFLAKE_DATABASE', '') }}"
+      # DBT_SERVICE is a TYPE=SERVICE user: key-pair only. Set exactly one of the key (PEM or
+      # base64 DER, the CI secret) or a key file path.
+      user: "{{ env_var('SNOWFLAKE_USER', '') or 'DBT_SERVICE' }}"
+      private_key: "{{ env_var('SNOWFLAKE_PRIVATE_KEY', '') }}"
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH', '') }}"
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE', '') or 'TRANSFORMER' }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE', '') or 'RETAIL_WH' }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE', '') or 'RETAIL' }}"
       schema: gold
       threads: 4

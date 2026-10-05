@@ -41,6 +41,12 @@ SILVER_TABLES = (
 )
 
 
+def lakehouse_uri(env: Mapping[str, str]) -> str:
+    """Spark lakehouse root: LAKEHOUSE_URI (s3:// on EMR), else the local MinIO bucket over s3a."""
+    uri = env.get("LAKEHOUSE_URI") or f"s3a://{env.get('LAKEHOUSE_BUCKET', 'lakehouse')}"
+    return uri.rstrip("/")
+
+
 def storage_options(root: str, env: Mapping[str, str]) -> dict[str, str] | None:
     if not root.startswith("s3"):
         return None

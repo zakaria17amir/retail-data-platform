@@ -8,4 +8,4 @@ select
     _source_ts,
     _is_deleted,
     _silver_loaded_at
-from {{ source('silver', 'order_payments') }}
+from {{ latest_export(source('silver', 'order_payments')) }}

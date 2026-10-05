@@ -31,6 +31,7 @@ from pyspark.sql.types import (
 )
 
 from lakehouse_spark.bronze.app import build_session
+from lakehouse_spark.cli import lakehouse_uri
 from lakehouse_spark.silver.cdc import collapse_latest, exact_duplicates, flatten_cdc, merge_current
 from lakehouse_spark.silver.domain.events import event_rules
 from lakehouse_spark.silver.domain.geo import zip_centroids
@@ -304,9 +305,7 @@ def new_run_id() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="silver")
     parser.add_argument("--tables", default="", help="comma-separated silver tables (default all)")
-    parser.add_argument(
-        "--root", default=f"s3a://{os.environ.get('LAKEHOUSE_BUCKET', 'lakehouse')}"
-    )
+    parser.add_argument("--root", default=lakehouse_uri(os.environ))
     args = parser.parse_args(argv)
     names = [n for n in args.tables.split(",") if n]
     unknown = set(names) - {spec.name for spec in TABLES}

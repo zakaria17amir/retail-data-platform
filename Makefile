@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load ollama-models enrich rag agents-eval shop-init
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load cloud-validate cloud-bootstrap cloud-plan cloud-up cloud-up-aws cloud-up-snowflake cloud-up-aws-integration cloud-down cloud-dbt ollama-models enrich rag agents-eval shop-init
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -118,6 +118,61 @@ ml:
 # /recommend p95 target < 50 ms at 20 users; needs `make up PROFILE=realtime` and published candidates
 recommend-load:
 	uv run --project ml locust -f ml/locustfile_recommend.py --headless -u 20 -r 5 -t 60s --host http://127.0.0.1:$${SERVING_PORT:-8000}
+
+# Cloud (phase 7). Applies are manual: terraform prompts unless CONFIRM=yes. Backends read backend.hcl,
+# variables terraform.tfvars (both git-ignored copies of the *.example files). TFLINT = tflint binary.
+TF_ROOTS = terraform/aws/bootstrap terraform/aws/envs/demo terraform/snowflake
+TFLINT ?= tflint
+TF_AUTO = $(if $(filter yes,$(CONFIRM)),-auto-approve)
+TF_BOOTSTRAP = terraform -chdir=terraform/aws/bootstrap
+TF_DEMO = terraform -chdir=terraform/aws/envs/demo
+TF_SNOWFLAKE = terraform -chdir=terraform/snowflake
+
+cloud-validate:
+	terraform fmt -check -recursive terraform
+	@set -e; for d in $(TF_ROOTS); do echo "== validate $$d"; \
+		terraform -chdir=$$d init -backend=false -input=false -lockfile=readonly >/dev/null; \
+		terraform -chdir=$$d validate -no-color; done
+	"$(TFLINT)" --init --config "$(CURDIR)/.tflint.hcl"
+	"$(TFLINT)" --chdir terraform --recursive --config "$(CURDIR)/.tflint.hcl" --format compact
+	@set -e; for t in $$(find terraform -type d -name tests -not -path '*/.terraform/*'); do d=$${t%/tests}; \
+		echo "== test $$d"; cp terraform/aws/envs/demo/.terraform.lock.hcl "$$d/"; \
+		terraform -chdir=$$d init -backend=false -input=false -lockfile=readonly >/dev/null; terraform -chdir=$$d test -no-color; done
+
+cloud-bootstrap:
+	$(TF_BOOTSTRAP) init -input=false
+	$(TF_BOOTSTRAP) apply $(TF_AUTO)
+
+cloud-plan:
+	$(TF_DEMO) init -input=false -backend-config=backend.hcl
+	$(TF_DEMO) plan
+	$(TF_SNOWFLAKE) init -input=false -backend-config=backend.hcl
+	$(TF_SNOWFLAKE) plan
+
+# two-step apply (runbook §3): cloud-up-aws (pass 1), cloud-up-snowflake, cloud-up-aws-integration
+# (pass 2, after copying the snowflake outputs into envs/demo/terraform.tfvars); later changes: cloud-up
+cloud-up-aws cloud-up-aws-integration:
+	$(TF_DEMO) init -input=false -backend-config=backend.hcl
+	$(TF_DEMO) apply $(TF_AUTO)
+
+cloud-up-snowflake:
+	$(TF_SNOWFLAKE) init -input=false -backend-config=backend.hcl
+	$(TF_SNOWFLAKE) apply $(TF_AUTO)
+
+cloud-up: cloud-up-aws cloud-up-snowflake
+
+# everything except the bootstrap state bucket/lock table
+cloud-down:
+	@[ "$(CONFIRM)" = yes ] || { printf 'Destroy the Snowflake objects and the AWS demo env (state bucket kept)? Type yes: '; \
+		read ans; [ "$$ans" = yes ]; } || { echo 'Aborted (CONFIRM=yes skips this prompt).'; exit 1; }
+	$(TF_SNOWFLAKE) init -input=false -backend-config=backend.hcl
+	$(TF_SNOWFLAKE) destroy -auto-approve
+	$(TF_DEMO) init -input=false -backend-config=backend.hcl
+	$(TF_DEMO) destroy -auto-approve
+
+# dbt build on Snowflake (cloud-batch.yml); SNOWFLAKE_* env, key-pair auth via SNOWFLAKE_PRIVATE_KEY
+cloud-dbt:
+	cd analytics && $(DBT_SNOWFLAKE) deps && $(DBT_SNOWFLAKE) build --target snowflake --exclude-resource-type unit_test
 
 OLLAMA_MODELS = qwen2.5:7b-instruct bge-m3
 

@@ -1,0 +1,122 @@
+name: cloud-batch
+
+# "MWAA in production": EMR Serverless silver -> Parquet export (Snowpipe auto-ingests) -> dbt on Snowflake.
+# Disabled unless the repository variable CLOUD_ENABLED is 'true'.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloud-batch
+  cancel-in-progress: false
+
+jobs:
+  batch:
+    if: vars.CLOUD_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: cloud
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ARTIFACTS_BUCKET: ${{ vars.ARTIFACTS_BUCKET }}
+      LAKEHOUSE_BUCKET: ${{ vars.LAKEHOUSE_BUCKET }}
+      EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+      EMR_JOB_ROLE_ARN: ${{ vars.EMR_JOB_ROLE_ARN }}
+      RUN_ID: ${{ github.run_id }}
+      JOB_TIMEOUT_MINUTES: "45"
+      # same pins as DBT_SNOWFLAKE in the Makefile; its env also has snowflake-connector-python
+      DBT_ENV: uv tool run --python 3.12 --exclude-newer 2026-09-27T00:00:00Z --from dbt-core==1.12.5 --with dbt-snowflake==1.12.1
+      SNOWFLAKE_ACCOUNT: ${{ vars.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER: ${{ vars.SNOWFLAKE_USER }}
+      SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
+        with:
+          role-to-assume: ${{ vars.AWS_RUN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+
+      - name: package and upload job code
+        run: |
+          sh lakehouse/spark/cloud/package.sh
+          aws s3 cp lakehouse/spark/dist/ "s3://$ARTIFACTS_BUCKET/jobs/$GITHUB_SHA/" --recursive
+          printf '### cloud-batch run %s\n\n| step | id / state |\n|---|---|\n| job code | s3://%s/jobs/%s/ |\n' \
+            "$RUN_ID" "$ARTIFACTS_BUCKET" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      # Delta comes from the release (emr-spark-8.0.0), not the zip
+      - name: EMR Serverless silver then export
+        run: |
+          base="s3://$ARTIFACTS_BUCKET/jobs/$GITHUB_SHA"
+          params="--py-files $base/lakehouse_spark.zip"
+          params="$params --conf spark.jars=/usr/share/aws/delta/lib/delta-spark.jar,/usr/share/aws/delta/lib/delta-storage.jar"
+          params="$params --conf spark.sql.extensions=io.delta.sql.DeltaSparkSessionExtension"
+          params="$params --conf spark.sql.catalog.spark_catalog=org.apache.spark.sql.delta.catalog.DeltaCatalog"
+          params="$params --conf spark.emr-serverless.driverEnv.LAKEHOUSE_URI=s3://$LAKEHOUSE_BUCKET"
+          run_task() {
+            driver=$(jq -nc --arg ep "$base/entrypoint.py" --arg task "$1" --arg run "$RUN_ID" --arg params "$params" \
+              '{sparkSubmit: {entryPoint: $ep, entryPointArguments: [$task, "--run-id", $run], sparkSubmitParameters: $params}}')
+            id=$(aws emr-serverless start-job-run --application-id "$EMR_APPLICATION_ID" \
+              --execution-role-arn "$EMR_JOB_ROLE_ARN" --name "$1-$RUN_ID" --job-driver "$driver" \
+              --execution-timeout-minutes "$JOB_TIMEOUT_MINUTES" --query jobRunId --output text)
+            echo "$1 job run $id"
+            # EMR cancels the run at --execution-timeout-minutes; the loop gives it 5 more minutes to report
+            deadline=$(( $(date +%s) + (JOB_TIMEOUT_MINUTES + 5) * 60 ))
+            while :; do
+              state=$(aws emr-serverless get-job-run --application-id "$EMR_APPLICATION_ID" --job-run-id "$id" \
+                --query jobRun.state --output text)
+              case $state in
+                SUCCESS) break ;;
+                FAILED|CANCELLED)
+                  aws emr-serverless get-job-run --application-id "$EMR_APPLICATION_ID" --job-run-id "$id" \
+                    --query jobRun.stateDetails --output text
+                  break ;;
+              esac
+              if [ "$(date +%s)" -ge "$deadline" ]; then state="TIMEOUT($state)"; break; fi
+              sleep 30
+            done
+            echo "| EMR $1 | $id $state |" >> "$GITHUB_STEP_SUMMARY"
+            echo "$1 $id $state"
+            [ "$state" = SUCCESS ]
+          }
+          run_task silver
+          run_task export
+
+      # Snowpipe loads the export asynchronously (S3 event -> SQS). The export's manifest lists every
+      # table's parts and rows: poll Snowflake until all of them are loaded, or fail after the timeout
+      - name: wait for Snowpipe
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+          SNOWPIPE_TIMEOUT_SECONDS: ${{ vars.SNOWPIPE_TIMEOUT_SECONDS || '900' }}
+          PYTHONPATH: lakehouse/spark/src
+        run: |
+          aws s3 cp "s3://$LAKEHOUSE_BUCKET/export/_manifests/$RUN_ID.json" manifest.json
+          # shellcheck disable=SC2086 # DBT_ENV is a word list
+          if $DBT_ENV python -m lakehouse_spark.cloud.snowpipe_wait manifest.json --timeout "$SNOWPIPE_TIMEOUT_SECONDS"
+          then result=loaded; else result=failed; fi
+          echo "| Snowpipe run $RUN_ID | $result |" >> "$GITHUB_STEP_SUMMARY"
+          [ "$result" = loaded ]
+
+      # dbt reads exactly this run (latest_export); unit tests use duckdb SQL and run in ci.yml
+      - name: dbt build --target snowflake
+        env:
+          SNOWFLAKE_PRIVATE_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+        working-directory: analytics
+        run: |
+          # shellcheck disable=SC2086 # DBT_ENV is a word list
+          if $DBT_ENV dbt deps &&
+            $DBT_ENV dbt build --target snowflake --exclude-resource-type unit_test --vars "{export_run_id: '$RUN_ID'}"
+          then result=success; else result=failed; fi
+          echo "| dbt build (snowflake, run $RUN_ID) | $result |" >> "$GITHUB_STEP_SUMMARY"
+          [ "$result" = success ]

@@ -38,12 +38,21 @@ orchestration/airflow.db
 mlruns/
 mlartifacts/
 
-# Terraform (.terraform.lock.hcl stays tracked)
+# Terraform (root .terraform.lock.hcl stays tracked; module copies come from make cloud-validate)
 .terraform/
 *.tfstate
 *.tfstate.*
 *.tfvars
 !*.example.tfvars
+backend.hcl
+crash.log
+*.tfplan
+terraform/aws/modules/**/.terraform.lock.hcl
+
+# Keys (Snowflake key-pair auth)
+*.p8
+*.pem
+*_key.pub
 
 # Power BI temp
 *.pbix.bak

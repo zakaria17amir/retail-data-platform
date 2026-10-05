@@ -18,4 +18,4 @@ select
     rank,
     rec_model_version,
     rec_strategy
-from {{ source('silver', 'clickstream') }}
+from {{ latest_export(source('silver', 'clickstream')) }}

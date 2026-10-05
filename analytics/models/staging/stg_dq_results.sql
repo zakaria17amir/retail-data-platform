@@ -8,4 +8,4 @@ select
     observed_value,
     details,
     checked_at
-from {{ source('silver', 'dq_results') }}
+from {{ latest_export(source('silver', 'dq_results')) }}
