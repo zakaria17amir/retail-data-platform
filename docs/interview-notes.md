@@ -2,8 +2,7 @@
 
 Sources for every number below: the ADRs in [docs/adr/](adr/), the runbooks in
 [docs/runbooks/](runbooks/), the model cards in [ds/model_cards/](../ds/model_cards/) and the phase
-ledgers. GenAI quality and latency numbers live only in ADR-0008 (`docs/adr/0008-genai-agents.md`,
-Phase 6 branch).
+ledgers. GenAI quality and latency numbers are in [ADR-0008](adr/0008-genai-agents.md).
 
 ## 1. 60-second pitch
 
@@ -90,12 +89,12 @@ then Parquet export → Snowpipe → dbt-snowflake.
 13. **HITL quote recomputed on resume.** *Symptom:* review found that after the LangGraph interrupt,
     the resumed node re-ran and re-quoted, so the order placed could differ from the one approved.
     *Fix:* separate quote → approve → place nodes. The approved quote is inserted unchanged, or the
-    order aborts on a stock failure. ADR-0008.
+    order aborts on a stock failure. [ADR-0008](adr/0008-genai-agents.md).
 14. **pgvector swap on a live CDC database.** *Risk:* changing the Postgres image under an existing
     volume could invalidate text-index collations or break the replication slot. *Fix:*
     `pgvector:0.8.6-pg16-bookworm` keeps glibc 2.36 (trixie would not). After the swap: collations
     2.36 = 2.36, 0 mismatches, `make status` counts identical, slot active, and a CDC probe reached
-    bronze. The Phase 7 branch got the same image line so a `compose up` there doesn't revert it. ADR-0008.
+    bronze. [ADR-0008](adr/0008-genai-agents.md).
 15. **Cloud dbt read partial snapshots.** *Cause:* dbt picked the max export run id after a fixed
     Snowpipe wait, which could pick a partial or stale run. *Fix:* the export writes a manifest,
     `snowpipe_wait` polls until loaded, and dbt gets the exact `export_run_id` var.
@@ -114,9 +113,9 @@ then Parquet export → Snowpipe → dbt-snowflake.
 - **Python stream scorer, not Spark:** the Spark image runs Python 3.10 and can't unpickle the 3.12
   champion. Approve → `ml.order_risk` takes 0.52 s and 1.28 s in two e2e runs. [ADR-0007](adr/0007-realtime-ml.md).
 - **MetricFlow Python API in-process for agents:** `dbt-metricflow`'s adapter opened the warehouse
-  read-write and loaded S3 secrets, so the agents use the API on a read-only DuckDB. ADR-0008.
+  read-write and loaded S3 secrets, so the agents use the API on a read-only DuckDB. [ADR-0008](adr/0008-genai-agents.md).
 - **Local-first LLM:** LiteLLM routes to Ollama by default. Hosted models only run with explicit
-  `LLM_PROVIDER=hosted`, with no silent fallbacks, and embeddings always stay local. ADR-0008.
+  `LLM_PROVIDER=hosted`, with no silent fallbacks, and embeddings always stay local. [ADR-0008](adr/0008-genai-agents.md).
 - **Terraform validate-only in CI, manual apply:** no cloud credentials in the dev environment, a $25
   budget and a two-step AWS ↔ Snowflake apply. [ADR-0009](adr/0009-cloud-slice.md).
 
@@ -139,8 +138,10 @@ then Parquet export → Snowpipe → dbt-snowflake.
   0.4004), and the v1 champion gate is partly in-sample after the window moved. The drift monitor
   breaches on every run on frozen replay data (drift share 0.3125 > 0.3), so it stays paused by
   default. [Model card](../ds/model_cards/demand_forecast.md), [ADR-0006](adr/0006-ml-platform.md).
-- **GenAI:** live model numbers are in ADR-0008. The agent emits no product-view events, so its
-  recommendations are cold start only.
+- **GenAI:** measured on local Qwen2.5-7B (≈ 20 tok/s on a 6 GB laptop GPU): analytics eval
+  execution accuracy 0.70 on 10 cases, and full-text RAG recall only 0.02 (AND-matching tsquery), so
+  hybrid search is effectively vector search. The shopping agent emits no product-view events, so its
+  recommendations are cold start only. [ADR-0008](adr/0008-genai-agents.md).
 
 ## 6. CV bullets
 
@@ -164,5 +165,9 @@ then Parquet export → Snowpipe → dbt-snowflake.
 - Built real-time ML: a CDC stream scorer (approve → risk score in 0.50-1.28 s e2e) and stateful
   Spark session features pushed to Feast, feeding a two-stage recommender (R@10 0.1165 vs 0.1050,
   coverage 0.140 vs 0.024 on synthetic sessions).
+- Built local-first GenAI on Ollama behind a LiteLLM gateway: LLM catalogue enrichment (196/200
+  schema-valid), pgvector hybrid RAG (Recall@10 0.98, MRR 0.885 on 100 queries), and LangGraph agents
+  with a guarded SQL tool and a human-approved `place_order` (approve writes the quoted total, reject
+  writes nothing).
 - Wrote Terraform for AWS (S3, EMR Serverless, ECS Fargate, GitHub OIDC, $25 budget) and Snowflake
   (Snowpipe, dbt-snowflake gold), validated in CI with mocked module tests. Apply is manual.
