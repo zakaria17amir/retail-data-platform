@@ -1,5 +1,5 @@
 variable "name_prefix" {
-  description = "Prefix for role names; the deploy role may only manage project resources carrying this prefix."
+  description = "Prefix for role names; the plan role may only read project resources carrying this prefix."
   type        = string
 }
 
@@ -15,11 +15,6 @@ variable "github_repo" {
 
 variable "tf_state_bucket" {
   description = "Name of the Terraform remote state bucket (from bootstrap)."
-  type        = string
-}
-
-variable "tf_lock_table" {
-  description = "Name of the DynamoDB state lock table (from bootstrap)."
   type        = string
 }
 

@@ -40,8 +40,8 @@ jobs:
           TF_PLUGIN_CACHE_DIR: ${{ runner.temp }}/tf-plugin-cache
         run: mkdir -p "$TF_PLUGIN_CACHE_DIR" && make cloud-validate
 
-  # The OIDC roles trust only refs/heads/main and environment `cloud`, so a pull_request run can never
-  # assume them (by design): plan runs on push to main / manual dispatch, in environment `cloud`.
+  # The OIDC roles trust only environment `cloud` (deployment branches: main), so a pull_request run can
+  # never assume them (by design): plan runs on push to main / manual dispatch, in environment `cloud`.
   plan-skipped:
     needs: validate
     if: github.event_name == 'pull_request' || vars.AWS_PLAN_ROLE_ARN == ''
@@ -52,7 +52,7 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            why="pull_request runs cannot assume the OIDC deploy role (trust: main + environment cloud)"
+            why="pull_request runs cannot assume the OIDC plan role (trust: environment cloud only)"
           else
             why="repository variable AWS_PLAN_ROLE_ARN is not set"
           fi
@@ -88,7 +88,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      # -lock=false: a read-only plan must not leave a stale lock when the run is cancelled
+      # -lock=false: the plan role is read-only (no lock table/object writes) and must not leave a stale lock.
+      # The plan is printed to a PUBLIC log: alert_email, serving_allowed_cidr and the Snowflake account
+      # vars are sensitive = true, so they show as (sensitive value); ARNs still carry the account id.
       - name: plan aws/envs/demo
         working-directory: terraform/aws/envs/demo
         run: |

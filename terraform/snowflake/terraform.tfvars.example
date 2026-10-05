@@ -1,9 +1,10 @@
 # cp terraform.tfvars.example terraform.tfvars (git-ignored). Pass the private key via
-# TF_VAR_private_key="$(cat rsa_key.p8)" rather than writing it here.
-organization_name    = "MYORG"
-account_name         = "MYACCOUNT"
-user                 = "TERRAFORM"
-lakehouse_bucket     = "retail-data-platform-demo-lakehouse"
-storage_aws_role_arn = "arn:aws:iam::000000000000:role/retail-demo-snowflake"
+# TF_VAR_private_key="$(cat ~/.snowflake/tf_key.p8)" rather than writing it here.
+organization_name = "MYORG"
+account_name      = "MYACCOUNT"
+user              = "TERRAFORM"
+# both are predictable before the AWS apply (terraform -chdir=terraform/aws/envs/demo output after cloud-up-aws)
+lakehouse_bucket     = "retail-data-platform-demo-<account-id>-lakehouse"
+storage_aws_role_arn = "arn:aws:iam::<account-id>:role/retail-data-platform-demo-snowflake-export-read"
 dbt_rsa_public_key   = "MIIBIjANBgkqh...one-line-public-key...IDAQAB"
 credit_quota         = 5

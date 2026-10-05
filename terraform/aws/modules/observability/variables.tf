@@ -6,6 +6,7 @@ variable "name_prefix" {
 variable "alert_email" {
   description = "Email address receiving budget and alarm notifications."
   type        = string
+  sensitive   = true
 }
 
 variable "monthly_budget_usd" {

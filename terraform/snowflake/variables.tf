@@ -1,11 +1,13 @@
 variable "organization_name" {
   description = "Snowflake organization name (the <org> in <org>-<account>)."
   type        = string
+  sensitive   = true
 }
 
 variable "account_name" {
   description = "Snowflake account name (the <account> in <org>-<account>)."
   type        = string
+  sensitive   = true
 }
 
 variable "user" {

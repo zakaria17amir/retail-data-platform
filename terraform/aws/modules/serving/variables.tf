@@ -26,6 +26,7 @@ variable "subnet_ids" {
 variable "allowed_cidr" {
   description = "Only CIDR allowed to reach the ALB (e.g. your public IP /32)."
   type        = string
+  sensitive   = true
 
   validation {
     condition     = can(cidrhost(var.allowed_cidr, 0)) && var.allowed_cidr != "0.0.0.0/0"

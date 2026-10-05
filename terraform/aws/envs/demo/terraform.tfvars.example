@@ -3,7 +3,6 @@ env             = "demo"
 github_repo     = "<owner>/retail-data-platform"
 alert_email     = "you@example.com"
 tf_state_bucket = "retail-data-platform-tfstate-<account-id>"
-tf_lock_table   = "retail-data-platform-tf-locks"
 force_destroy   = true
 
 serving_image_tag    = "<git-sha>"

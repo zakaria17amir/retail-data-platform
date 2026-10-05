@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load cloud-validate cloud-bootstrap cloud-plan cloud-up cloud-down cloud-dbt
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load cloud-validate cloud-bootstrap cloud-plan cloud-up cloud-up-aws cloud-up-snowflake cloud-up-aws-integration cloud-down cloud-dbt
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -136,7 +136,8 @@ cloud-validate:
 	"$(TFLINT)" --init --config "$(CURDIR)/.tflint.hcl"
 	"$(TFLINT)" --chdir terraform --recursive --config "$(CURDIR)/.tflint.hcl" --format compact
 	@set -e; for t in $$(find terraform -type d -name tests -not -path '*/.terraform/*'); do d=$${t%/tests}; \
-		echo "== test $$d"; terraform -chdir=$$d init -backend=false -input=false >/dev/null; terraform -chdir=$$d test -no-color; done
+		echo "== test $$d"; cp terraform/aws/envs/demo/.terraform.lock.hcl "$$d/"; \
+		terraform -chdir=$$d init -backend=false -input=false -lockfile=readonly >/dev/null; terraform -chdir=$$d test -no-color; done
 
 cloud-bootstrap:
 	$(TF_BOOTSTRAP) init -input=false
@@ -148,12 +149,17 @@ cloud-plan:
 	$(TF_SNOWFLAKE) init -input=false -backend-config=backend.hcl
 	$(TF_SNOWFLAKE) plan
 
-# two-step apply (Snowflake integration <-> AWS role): run again after filling the snowflake_* variables
-cloud-up:
+# two-step apply (runbook §3): cloud-up-aws (pass 1), cloud-up-snowflake, cloud-up-aws-integration
+# (pass 2, after copying the snowflake outputs into envs/demo/terraform.tfvars); later changes: cloud-up
+cloud-up-aws cloud-up-aws-integration:
 	$(TF_DEMO) init -input=false -backend-config=backend.hcl
 	$(TF_DEMO) apply $(TF_AUTO)
+
+cloud-up-snowflake:
 	$(TF_SNOWFLAKE) init -input=false -backend-config=backend.hcl
 	$(TF_SNOWFLAKE) apply $(TF_AUTO)
+
+cloud-up: cloud-up-aws cloud-up-snowflake
 
 # everything except the bootstrap state bucket/lock table
 cloud-down:
@@ -166,4 +172,4 @@ cloud-down:
 
 # dbt build on Snowflake (cloud-batch.yml); SNOWFLAKE_* env, key-pair auth via SNOWFLAKE_PRIVATE_KEY
 cloud-dbt:
-	cd analytics && $(DBT_SNOWFLAKE) deps && $(DBT_SNOWFLAKE) build --target snowflake
+	cd analytics && $(DBT_SNOWFLAKE) deps && $(DBT_SNOWFLAKE) build --target snowflake --exclude-resource-type unit_test

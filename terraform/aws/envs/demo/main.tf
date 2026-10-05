@@ -25,7 +25,6 @@ module "iam" {
   name_prefix          = local.name_prefix
   github_repo          = var.github_repo
   tf_state_bucket      = var.tf_state_bucket
-  tf_lock_table        = var.tf_lock_table
   artifacts_bucket_arn = module.storage.artifacts_bucket_arn
   lakehouse_bucket_arn = module.storage.lakehouse_bucket_arn
   emr_log_group_arn    = module.observability.emr_log_group_arn

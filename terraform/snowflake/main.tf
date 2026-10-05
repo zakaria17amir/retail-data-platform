@@ -140,6 +140,8 @@ resource "snowflake_service_user" "dbt" {
   default_warehouse = snowflake_warehouse.retail.name
   default_namespace = "${snowflake_database.retail.name}.${snowflake_schema.this["GOLD"].name}"
   rsa_public_key    = var.dbt_rsa_public_key
+  # silver timestamps are TIMESTAMP_LTZ: cast(... as date) must give UTC dates, as on duckdb
+  timezone = "UTC"
 }
 
 resource "snowflake_grant_account_role" "dbt_transformer" {

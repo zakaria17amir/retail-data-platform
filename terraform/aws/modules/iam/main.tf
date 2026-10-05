@@ -8,10 +8,8 @@ locals {
   account_id = data.aws_caller_identity.current.account_id
   partition  = data.aws_partition.current.partition
   region     = data.aws_region.current.region
-  github_subjects = [
-    "repo:${var.github_repo}:ref:refs/heads/main",
-    "repo:${var.github_repo}:environment:cloud",
-  ]
+  # both workflows' credentialed jobs run in environment `cloud` (deployment branches: main only)
+  github_subjects = ["repo:${var.github_repo}:environment:cloud"]
 }
 
 # Thumbprint-less: AWS validates token.actions.githubusercontent.com against its trusted root CAs.
@@ -45,10 +43,12 @@ data "aws_iam_policy_document" "github_trust" {
 
 resource "aws_iam_role" "github_deploy" {
   name               = "${var.name_prefix}-github-deploy"
-  description        = "Terraform plan/apply from GitHub Actions (main or the cloud environment only)."
+  description        = "Read-only terraform plan from GitHub Actions (environment cloud); applies run from an admin CLI profile."
   assume_role_policy = data.aws_iam_policy_document.github_trust.json
 }
 
+# Plan-only: refresh reads, no writes. The plan job runs with -lock=false, so no lock table access;
+# no object reads outside the state bucket and no secret values.
 data "aws_iam_policy_document" "github_deploy" {
   statement {
     sid       = "StateBucketList"
@@ -57,74 +57,69 @@ data "aws_iam_policy_document" "github_deploy" {
   }
 
   statement {
-    sid       = "StateObjects"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+    sid       = "StateRead"
+    actions   = ["s3:GetObject"]
     resources = ["arn:${local.partition}:s3:::${var.tf_state_bucket}/*"]
   }
 
   statement {
-    sid       = "StateLock"
-    actions   = ["dynamodb:DescribeTable", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
-    resources = ["arn:${local.partition}:dynamodb:${local.region}:${local.account_id}:table/${var.tf_lock_table}"]
+    sid       = "ProjectBucketConfig"
+    actions   = ["s3:Get*"]
+    resources = ["arn:${local.partition}:s3:::${var.name_prefix}-*"]
   }
 
   statement {
-    sid     = "ProjectBuckets"
-    actions = ["s3:*"]
-    resources = [
-      "arn:${local.partition}:s3:::${var.name_prefix}-*",
-      "arn:${local.partition}:s3:::${var.name_prefix}-*/*",
-    ]
-  }
-
-  statement {
-    sid     = "ProjectIam"
-    actions = ["iam:*"]
+    sid     = "ProjectIamRead"
+    actions = ["iam:Get*", "iam:List*"]
     resources = [
       "arn:${local.partition}:iam::${local.account_id}:role/${var.name_prefix}-*",
-      "arn:${local.partition}:iam::${local.account_id}:policy/${var.name_prefix}-*",
       aws_iam_openid_connect_provider.github.arn,
     ]
   }
 
   statement {
-    sid       = "ServiceLinkedRoles"
-    actions   = ["iam:CreateServiceLinkedRole"]
-    resources = ["*"]
-
-    condition {
-      test     = "StringEquals"
-      variable = "iam:AWSServiceName"
-      values = [
-        "ecs.amazonaws.com",
-        "elasticloadbalancing.amazonaws.com",
-        "ops.emr-serverless.amazonaws.com",
-      ]
-    }
-  }
-
-  statement {
-    sid       = "ProjectBudget"
-    actions   = ["budgets:*"]
+    sid       = "ProjectBudgetRead"
+    actions   = ["budgets:ViewBudget", "budgets:ListTagsForResource"]
     resources = ["arn:${local.partition}:budgets::${local.account_id}:budget/${var.name_prefix}-*"]
   }
 
   statement {
-    sid = "RegionalServices"
+    sid       = "ProjectTopicsRead"
+    actions   = ["sns:GetTopicAttributes", "sns:GetSubscriptionAttributes", "sns:ListTagsForResource"]
+    resources = ["arn:${local.partition}:sns:${local.region}:${local.account_id}:${var.name_prefix}-*"]
+  }
+
+  statement {
+    sid       = "ProjectSecretMetadata"
+    actions   = ["secretsmanager:DescribeSecret", "secretsmanager:GetResourcePolicy"]
+    resources = ["arn:${local.partition}:secretsmanager:${local.region}:${local.account_id}:secret:${var.name_prefix}-*"]
+  }
+
+  statement {
+    sid = "ProjectRepositoryRead"
     actions = [
-      "emr-serverless:*",
-      "ecs:*",
-      "ecr:*",
-      "elasticloadbalancing:*",
+      "ecr:DescribeRepositories",
+      "ecr:GetLifecyclePolicy",
+      "ecr:GetRepositoryPolicy",
+      "ecr:ListTagsForResource",
+    ]
+    resources = ["arn:${local.partition}:ecr:${local.region}:${local.account_id}:repository/${var.name_prefix}-*"]
+  }
+
+  statement {
+    sid = "RegionalDescribe"
+    actions = [
+      "emr-serverless:GetApplication",
+      "emr-serverless:ListTagsForResource",
+      "ecs:Describe*",
+      "ecs:List*",
+      "elasticloadbalancing:Describe*",
       "ec2:Describe*",
-      "ec2:*SecurityGroup*",
-      "ec2:CreateTags",
-      "ec2:DeleteTags",
-      "logs:*",
-      "cloudwatch:*",
-      "sns:*",
-      "sqs:*",
-      "secretsmanager:*",
+      "logs:Describe*",
+      "logs:ListTagsForResource",
+      "logs:ListTagsLogGroup",
+      "cloudwatch:DescribeAlarms",
+      "cloudwatch:ListTagsForResource",
     ]
     resources = ["*"]
 

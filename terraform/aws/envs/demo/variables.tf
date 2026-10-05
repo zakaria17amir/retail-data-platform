@@ -18,17 +18,12 @@ variable "github_repo" {
 variable "alert_email" {
   description = "Email address for budget and alarm notifications."
   type        = string
+  sensitive   = true
 }
 
 variable "tf_state_bucket" {
-  description = "Name of the Terraform state bucket created by terraform/aws/bootstrap."
+  description = "Name of the Terraform state bucket created by terraform/aws/bootstrap (the plan role reads it)."
   type        = string
-}
-
-variable "tf_lock_table" {
-  description = "Name of the DynamoDB lock table created by terraform/aws/bootstrap."
-  type        = string
-  default     = "retail-data-platform-tf-locks"
 }
 
 variable "force_destroy" {
@@ -57,6 +52,7 @@ variable "serving_image_tag" {
 variable "serving_allowed_cidr" {
   description = "Only CIDR allowed to reach the serving ALB (e.g. your public IP /32)."
   type        = string
+  sensitive   = true
 }
 
 variable "enable_serving" {

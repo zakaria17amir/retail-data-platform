@@ -24,10 +24,11 @@ same Spark code as local.
   `8.1.0` jumps to Spark 4.1.1 / Delta 4.2.0. GE needs Python ≥ 3.12 + pandas, so quality stays local.
 - **Fargate scale-to-zero.** Serving sits behind `enable_serving` (default `false`) with
   `desired_count` 0. The ALB bills hourly even with no tasks, so by default it isn't created.
-- **OIDC.** Exact `sub` matches on `ref:refs/heads/main` and `environment:cloud`, with no wildcards.
-  The `cloud` environment must be restricted to `main` in GitHub settings. There are two roles: a
-  Terraform-scoped deploy role, and a run role (EMR start/get, PassRole, artifacts put, ECR push).
-  No long-lived keys.
+- **OIDC.** One exact `sub` match, `repo:<repo>:environment:cloud`, with no wildcards: both
+  workflows' credentialed jobs run in that environment, which must be restricted to `main` in GitHub
+  settings. There are two roles: a read-only plan role (state-bucket read, scoped Get/List/Describe,
+  no IAM/secret/SNS writes; `plan -lock=false`), and a run role (EMR start/get, PassRole, artifacts
+  put, ECR push). Applies run from an admin CLI profile. No long-lived keys.
 - **Cost guard-rails as code.** Budget $25 (50/80/100 % email alerts). 7-day lifecycle on `landing/`
   and noncurrent versions. EMR auto-stop 5 min, max 16 vCPU / 64 GB. Snowflake XS with 60 s
   auto-suspend and a 5-credit resource monitor. The monitor covers warehouses only: Snowpipe's

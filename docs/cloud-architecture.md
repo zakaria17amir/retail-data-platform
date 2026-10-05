@@ -15,7 +15,7 @@ flowchart LR
   end
   LOCAL["local MinIO bronze/ (one-time copy)"]
   subgraph AWS["AWS eu-west-1"]
-    OIDC["IAM: GitHub OIDC, deploy + run roles"]
+    OIDC["IAM: GitHub OIDC, read-only plan + run roles"]
     ART[("S3 artifacts: job bundle, models/")]
     LH[("S3 lakehouse: bronze/, silver/ Delta; export/silver/ Parquet")]
     EMR["EMR Serverless emr-spark-8.0.0: silver, export"]

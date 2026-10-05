@@ -24,11 +24,14 @@ in Git Bash.
 - **Two key pairs** (Snowflake key-pair auth: unencrypted PKCS#8; keep them outside the repo, e.g.
   `~/.snowflake/`). You need one for the Terraform user and one for the dbt service user:
   ```sh
-  openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out tf_key.p8 -nocrypt
-  openssl rsa -in tf_key.p8 -pubout -out tf_key.pub
-  grep -v -- ----- tf_key.pub | tr -d '\n'      # one-line public key
+  mkdir -p ~/.snowflake && chmod 700 ~/.snowflake
+  openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out ~/.snowflake/tf_key.p8 -nocrypt
+  chmod 600 ~/.snowflake/tf_key.p8
+  openssl rsa -in ~/.snowflake/tf_key.p8 -pubout -out ~/.snowflake/tf_key.pub
+  grep -v -- ----- ~/.snowflake/tf_key.pub | tr -d '\n'      # one-line public key
   ```
-  Repeat with `dbt_key.p8`/`dbt_key.pub`. Then create the Terraform user as `ACCOUNTADMIN`.
+  Repeat with `~/.snowflake/dbt_key.p8` / `dbt_key.pub`. `.gitignore` also ignores `*.p8`, `*.pem`,
+  `*_key.pub` and `backend.hcl` as a backstop. Then create the Terraform user as `ACCOUNTADMIN`.
   Terraform needs `ACCOUNTADMIN` for the storage integration and the resource monitor.
   ```sql
   CREATE USER TERRAFORM TYPE = SERVICE RSA_PUBLIC_KEY = '<one-line tf_key.pub>' DEFAULT_ROLE = ACCOUNTADMIN;
@@ -58,8 +61,12 @@ in Git Bash.
 
   3. **Secrets:** `SNOWFLAKE_PRIVATE_KEY`, the PEM content of `dbt_key.p8`.
   4. **Optional, for `plan` in `terraform.yml`.** It runs on push to `main` or on manual dispatch,
-     never on PRs, because the OIDC trust rejects them. Without these values the job skips `plan`
-     with a notice.
+     never on PRs, because the OIDC trust accepts only `environment:cloud`. Without these values the
+     job skips `plan` with a notice. The plan role is read-only: it reads the state bucket and
+     describes the project's resources, and the job runs `plan -lock=false`, so it never takes the
+     lock (`TF_LOCK_TABLE` is only passed to the backend config). The plan prints to a public log;
+     `alert_email`, `serving_allowed_cidr` and the Snowflake account names are `sensitive` and show as
+     `(sensitive value)`, but ARNs still contain the account id.
      - Variables: `AWS_PLAN_ROLE_ARN` (`github_deploy_role_arn`), `TF_STATE_BUCKET`, `TF_LOCK_TABLE`.
      - Secrets: `TFVARS_DEMO` and `TFVARS_SNOWFLAKE` (the two `terraform.tfvars` contents), and
        `SNOWFLAKE_TF_PRIVATE_KEY` (`tf_key.p8`).
@@ -102,7 +109,9 @@ twice:
    Snowflake role and the S3 notification are skipped. `snowflake_role_arn` is already output: the
    name is deterministic, so the ARN is a prediction.
 2. **Snowflake.** In `terraform/snowflake/terraform.tfvars` set:
-   - `lakehouse_bucket` and `storage_aws_role_arn` = the pass-1 outputs;
+   - `lakehouse_bucket` and `storage_aws_role_arn` = the pass-1 outputs `lakehouse_bucket` and
+     `snowflake_role_arn` (`retail-data-platform-demo-<account-id>-lakehouse`,
+     `arn:aws:iam::<account-id>:role/retail-data-platform-demo-snowflake-export-read`);
    - `dbt_rsa_public_key` = the one-line `dbt_key.pub`;
    - `user = "TERRAFORM"`.
 
@@ -114,9 +123,9 @@ twice:
 
    This pass creates the read-only role on `export/silver/*` and the S3 → SQS notification.
 
-`make cloud-up` applies `envs/demo`, then `terraform/snowflake`. Run it once for steps 1 + 2, fill in
-the three variables, and run it again for step 3 (the Snowflake root is then a no-op). Terraform
-prompts before each apply; `CONFIRM=yes` auto-approves.
+One Make target per step: `make cloud-up-aws` (1), `make cloud-up-snowflake` (2) and
+`make cloud-up-aws-integration` (3). For later changes, `make cloud-up` applies AWS, then Snowflake.
+Terraform prompts before each apply; `CONFIRM=yes` auto-approves.
 
 If step 2 stops on the stage or a pipe because the role doesn't exist yet:
 1. Read `STORAGE_AWS_IAM_USER_ARN` and `STORAGE_AWS_EXTERNAL_ID` from `DESC INTEGRATION
@@ -164,7 +173,8 @@ the GitHub run id as `<run_id>`. The steps:
 3. Run EMR `silver --run-id <id>`, then `export --run-id <id>`, waiting for each with a 45-minute
    timeout.
 4. Wait `SNOWPIPE_WAIT_SECONDS`.
-5. Run `make cloud-dbt` (`dbt build --target snowflake`, key-pair from `SNOWFLAKE_PRIVATE_KEY`).
+5. Run `make cloud-dbt` (`dbt build --target snowflake --exclude-resource-type unit_test`, key-pair
+   from `SNOWFLAKE_PRIVATE_KEY`). The dbt unit tests run on duckdb in CI.
 6. Write the job-run ids and states to the job summary.
 
 Then verify:
@@ -197,7 +207,7 @@ Serving is off by default (`enable_serving = false`). When it's on, the ALB bill
    - `serving_image_tag = "<git-sha>"`;
    - `serving_allowed_cidr = "<your-ip>/32"` (`0.0.0.0/0` is rejected).
 
-   Run `make cloud-up`. This creates ECR, the ECS cluster and service at `desired_count = 0`, the ALB
+   Run `make cloud-up-aws`. This creates ECR, the ECS cluster and service at `desired_count = 0`, the ALB
    and the secret.
 2. Push the image. Tags are immutable, so use a new tag for every push:
    ```sh
@@ -209,7 +219,7 @@ Serving is off by default (`enable_serving = false`). When it's on, the ALB bill
 3. Set the secret value. Without one, tasks fail at secret injection:
    `aws secretsmanager put-secret-value --secret-id <serving_config_secret_arn> --secret-string <mlflow-uri>`.
    Without a reachable MLflow, `/health` still returns 200 with `model_loaded=false`.
-4. Scale with `serving_desired_count = 1` and `make cloud-up`. Use the tfvar rather than
+4. Scale with `serving_desired_count = 1` and `make cloud-up-aws`. Use the tfvar rather than
    `aws ecs update-service`, because the next apply would reset the count.
 5. Check with `curl -s "$(terraform -chdir=terraform/aws/envs/demo output -raw serving_url)/health"`.
 6. Scale back to 0, or set `enable_serving = false`, when you're done.
@@ -226,7 +236,10 @@ evidence, connect Power BI Desktop to Snowflake:
    - Advanced options: Role `REPORTER`, Database `RETAIL`.
 3. Sign in with Microsoft Entra ID, username/password, or *Key Pair Auth (ADBC)*. The connector
    supports all three. Snowflake is deprecating single-factor passwords.
-4. In Navigator, pick the marts in `RETAIL.GOLD` and choose **Import**. With Import, the warehouse
+4. Silver timestamps are `TIMESTAMP_LTZ`. `DBT_SERVICE` has `TIMEZONE = UTC` (Terraform), but your
+   user gets the account default (`America/Los_Angeles`), so `_utc` columns look shifted. Run
+   `ALTER USER <you> SET TIMEZONE = 'UTC';`, or account-wide `ALTER ACCOUNT SET TIMEZONE = 'UTC';`.
+5. In Navigator, pick the marts in `RETAIL.GOLD` and choose **Import**. With Import, the warehouse
    only resumes on refresh and suspends after 60 s; DirectQuery resumes it on every visual.
 
 ## 8. Teardown
