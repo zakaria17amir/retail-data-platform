@@ -21,7 +21,7 @@ import ingest_health  # noqa: E402
 import ml_common  # noqa: E402
 from airflow.dag_processing.dagbag import DagBag  # noqa: E402
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator  # noqa: E402
-from airflow.sdk import AssetAll, TriggerRule  # noqa: E402
+from airflow.sdk import Asset, AssetAll, TriggerRule  # noqa: E402
 
 ML_DAG_IDS = {
     "feast_materialize",
@@ -33,7 +33,12 @@ ML_DAG_IDS = {
     "generate_sessions",
     "train_recommender",
 }
-DAG_IDS = {"ingest_health", "silver_hourly", "gold_daily", "lakehouse_maintenance"} | ML_DAG_IDS
+GENAI_DAG_IDS = {"enrich_catalogue", "rag_index", "nightly_evals"}
+DAG_IDS = (
+    {"ingest_health", "silver_hourly", "gold_daily", "lakehouse_maintenance"}
+    | ML_DAG_IDS
+    | GENAI_DAG_IDS
+)
 TI = SimpleNamespace(dag_id="d", task_id="t", run_id="r", log_url="http://log")
 
 
@@ -541,3 +546,106 @@ def test_ml_task_requires_host_repo_dir(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.delenv("HOST_REPO_DIR", raising=False)
     with pytest.raises(KeyError, match="HOST_REPO_DIR"):
         ml_common.ml_task("x", ["materialize"])
+
+
+ENRICHED = Asset("s3://lakehouse/silver/product_enriched")
+LLM_SECRETS = {
+    "LITELLM_MASTER_KEY",
+    "MINIO_ROOT_USER",
+    "MINIO_ROOT_PASSWORD",
+    "RAG_DSN",
+    "SHOP_DSN",
+}
+
+
+def llm_tasks(dagbag: DagBag) -> list[Any]:
+    return [t for d in GENAI_DAG_IDS for t in dagbag.dags[d].tasks]
+
+
+def test_genai_dag_schedules(dagbag: DagBag) -> None:
+    dags = dagbag.dags
+    assert dags["enrich_catalogue"].timetable.expression == "0 0 * * 0"  # @weekly (+ manual)
+    assert ENRICHED in dags["enrich_catalogue"].get_task("enrich").outlets
+    assert dags["rag_index"].timetable.asset_condition == AssetAll(ENRICHED)
+    assert dags["nightly_evals"].timetable.expression == "0 0 * * *"  # @daily
+    for dag_id in GENAI_DAG_IDS:
+        assert dags[dag_id].max_active_runs == 1, dag_id
+        assert not dags[dag_id].catchup, dag_id
+
+
+def test_genai_task_commands(dagbag: DagBag) -> None:
+    def command(dag_id: str, task_id: str) -> list[str]:
+        return list(dagbag.dags[dag_id].get_task(task_id).command)
+
+    # sample size: ENRICH_LIMIT, read by the CLI (default 500)
+    assert command("enrich_catalogue", "enrich") == ["genai", "enrich"]
+    assert command("rag_index", "init") == ["genai", "rag", "init"]
+    assert command("rag_index", "index") == ["genai", "rag", "index"]
+    assert dagbag.dags["rag_index"].get_task("index").upstream_task_ids == {"init"}
+    for suite in ("analytics", "shopping"):
+        assert command("nightly_evals", suite) == [
+            "agents", "eval", suite, "--provider", "local", "--limit", "20"
+        ]  # fmt: skip
+
+
+def test_every_llm_task_runs_the_agents_image_in_the_llm_pool(dagbag: DagBag) -> None:
+    tasks = llm_tasks(dagbag)
+    assert len(tasks) == 5
+    repo = os.environ["HOST_REPO_DIR"]
+    for t in tasks:
+        assert t.task_type == "DockerOperator", t.task_id
+        assert t.pool == "llm", t.task_id  # one GPU: Ollama swaps chat and embed models
+        assert t.image == "retail-agents"
+        assert t.network_mode == "retail_retail"
+        assert t.auto_remove == "success"
+        assert t.mem_limit == "2g"
+        assert t.environment["LITELLM_URL"] == "http://litellm:4000"
+        assert t.environment["MLFLOW_TRACKING_URI"] == "http://mlflow:5000"
+        assert t.environment["MINIO_ENDPOINT"] == "http://minio:9000"
+        assert t.environment["RECOMMEND_URL"] == "http://serving:8000"
+        assert set(t._private_environment) == LLM_SECRETS
+        assert not LLM_SECRETS & set(t.environment)
+        mounts = {m["Target"]: m for m in t.mounts}
+        assert mounts["/app/data/gold"]["Source"] == f"{repo}/data/gold"
+        assert mounts["/app/analytics/target"]["Source"] == f"{repo}/analytics/target"
+        # golden sets: agents.evals.golden.DATA_DIR in the image, which ships agents/src only
+        assert mounts["/app/agents/evals/data"]["Source"] == f"{repo}/agents/evals/data"
+        # rag.sql / shop.sql at /app/sql: parents[4] of genai.rag.store and agents.shopping_agent.db
+        # (also COPYed into the image by agents/Dockerfile; the mount keeps them in step)
+        assert mounts["/app/sql"]["Source"] == f"{repo}/sql"
+        assert all(m["ReadOnly"] for m in t.mounts)
+
+
+def test_llm_task_dsns_point_at_compose_postgres(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path
+) -> None:
+    monkeypatch.setenv("HOST_REPO_DIR", "/repo")
+    for k, v in {"POSTGRES_USER": "u", "POSTGRES_PASSWORD": "p", "POSTGRES_DB": "db"}.items():
+        monkeypatch.setenv(k, v)
+    bag = DagBag(dag_folder=str(DAGS_DIR / "genai_dags.py"))
+    env = bag.dags["rag_index"].get_task("index")._private_environment
+    assert env["RAG_DSN"] == "postgresql://u:p@postgres:5432/db"
+    assert env["SHOP_DSN"] == "postgresql://shop_writer:shop_writer@postgres:5432/db"
+
+
+@pytest.mark.parametrize(("value", "limit"), [(None, "20"), ("", "20"), ("5", "5")])
+def test_eval_limit_from_env(
+    monkeypatch: pytest.MonkeyPatch, manifest: Path, value: str | None, limit: str
+) -> None:
+    monkeypatch.setenv("HOST_REPO_DIR", "/repo")
+    if value is None:
+        monkeypatch.delenv("EVAL_LIMIT", raising=False)
+    else:
+        monkeypatch.setenv("EVAL_LIMIT", value)
+    bag = DagBag(dag_folder=str(DAGS_DIR / "genai_dags.py"))
+    assert list(bag.dags["nightly_evals"].get_task("shopping").command)[-2:] == ["--limit", limit]
+
+
+def test_enrich_forwards_only_a_set_limit(monkeypatch: pytest.MonkeyPatch, manifest: Path) -> None:
+    monkeypatch.setenv("HOST_REPO_DIR", "/repo")
+    monkeypatch.setenv("ENRICH_LIMIT", "50")
+    bag = DagBag(dag_folder=str(DAGS_DIR / "genai_dags.py"))
+    assert bag.dags["enrich_catalogue"].get_task("enrich").environment["ENRICH_LIMIT"] == "50"
+    monkeypatch.setenv("ENRICH_LIMIT", "")  # compose passes an unset override as ""
+    bag = DagBag(dag_folder=str(DAGS_DIR / "genai_dags.py"))
+    assert "ENRICH_LIMIT" not in bag.dags["enrich_catalogue"].get_task("enrich").environment

@@ -1,0 +1,271 @@
+# GenAI and agents runbook (Phase 6)
+
+LiteLLM gateway (`litellm`, :4000) → Ollama on the host GPU. Catalogue enrichment → Delta
+`silver/product_enriched`; hybrid RAG index in pgvector (`rag.chunks`); analytics and shopping agents
+(LangGraph) with a Chainlit UI (`chainlit`, :8010); evals logged to MLflow. Design:
+[ADR-0008](../adr/0008-genai-agents.md). Needs silver (`make silver`), gold and the dbt artefacts
+(`make gold`; the analytics agent reads `analytics/target/semantic_manifest.json` and `manifest.json`),
+and the `retail-ml` image for `serving` (`make ml-build`). Run from the repo root in Git Bash.
+
+**Status:** live pass done on 2026-10-05 (RTX 4050, local Qwen + bge-m3); measured numbers in
+[ADR-0008](../adr/0008-genai-agents.md) ("Measured") and inline below. It covered chat, enrichment, RAG,
+both agents (CLI) and their evals; not yet live: the DAGs, Chainlit and the failure modes.
+
+## 1. Downloads (once)
+
+Ollama runs natively on Windows (not in Compose). Models (sizes from the Ollama library):
+
+```sh
+ollama pull qwen2.5:7b-instruct   # ~4.7 GB, Q4_K_M; aliases chat and judge
+ollama pull bge-m3                # ~1.2 GB, 1024-dim embeddings; alias embed
+ollama list                       # both must be listed
+# or: make ollama-models          # pulls both when `ollama` is on PATH, otherwise prints the commands
+```
+
+Images pinned in `docker-compose.yml` (the first is also used by `realtime-sql-init`):
+
+```sh
+docker pull pgvector/pgvector:0.8.6-pg16-bookworm@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+docker pull ghcr.io/berriai/litellm:v1.101.0@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b
+docker compose --profile genai build chainlit   # image retail-agents; base ghcr.io/astral-sh/uv:python3.12-bookworm-slim (digest in agents/Dockerfile)
+uv sync --project genai && uv sync --project agents   # host-side CLIs (separate uv projects)
+```
+
+`.env`: set `LITELLM_MASTER_KEY` to any value starting with `sk-` (litellm refuses to start without
+it: "set LITELLM_MASTER_KEY in .env"), e.g. `sk-$(openssl rand -hex 16)`. `RAG_DSN` and `SHOP_DSN`
+must use the same port as `POSTGRES_DSN` / `POSTGRES_PORT`. Leave `LLM_PROVIDER=local`.
+
+## 2. Postgres → pgvector swap (once, keeps the volume)
+
+The `postgres` image changes from `postgres:16.6` to `pgvector/pgvector:0.8.6-pg16-bookworm` (PG 16.15,
+same major, same Debian bookworm glibc 2.36, so collations and the data directory stay valid). The
+volume `retail_pgdata` is reused; nothing is wiped. Stop writers first (replayer, sim, stream-score).
+
+Pre-checks:
+
+```sh
+make status > pre-status.txt
+docker compose exec postgres psql -U retail -d retail -c "select slot_name, active, restart_lsn, confirmed_flush_lsn from pg_replication_slots;"
+curl -s http://127.0.0.1:8083/connectors/olist-postgres/status   # if the ingest profile is up
+```
+
+Swap only postgres:
+
+```sh
+docker compose up -d --no-deps --wait postgres
+docker compose logs --tail 50 postgres   # expect "database system is ready to accept connections"; STOP on an incompatible data directory
+```
+
+Post-checks:
+
+```sh
+docker compose exec postgres psql -U retail -d retail -c "select version();" \
+  -c "select * from pg_available_extensions where name='vector';" \
+  -c "select slot_name, active, restart_lsn, confirmed_flush_lsn from pg_replication_slots;" \
+  -c "select datname, datcollversion, pg_database_collation_actual_version(oid) from pg_database;"
+make status > post-status.txt && diff pre-status.txt post-status.txt
+curl -s http://127.0.0.1:8083/connectors/olist-postgres/status   # not RUNNING: docker compose --profile ingest restart kafka-connect
+```
+
+Expect `PostgreSQL 16.15`, a `vector` row, slot `olist_debezium` (turns `active=t` again once Connect
+reconnects), `datcollversion` equal to the actual version on every database, and no row-count diff.
+CDC smoke test: update one row and check that `confirmed_flush_lsn` advances or the row reaches bronze.
+Baseline recorded before the swap: Postgres 16.6, orders 99,441, products 32,951, `ml.order_risk` 151.
+
+## 3. Start
+
+```sh
+make up PROFILE=genai
+curl -s http://127.0.0.1:4000/health/liveliness
+curl -s http://127.0.0.1:4000/v1/models -H "Authorization: Bearer $LITELLM_MASTER_KEY"
+curl -s http://127.0.0.1:4000/v1/chat/completions -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H 'Content-Type: application/json' -d '{"model":"chat","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5}'
+curl -s http://127.0.0.1:4000/v1/embeddings -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H 'Content-Type: application/json' -d '{"model":"embed","input":"hello"}' \
+  | python -c "import sys,json; print(len(json.load(sys.stdin)['data'][0]['embedding']))"   # 1024
+```
+
+`genai` starts postgres, minio, minio-init, mlflow-init, mlflow, redis, serving, litellm and chainlit
+(no Redpanda). Host-side `uv run` commands below need the `.env` variables: the `make` targets export
+them; for plain `uv run`, first `set -a; . ./.env; set +a`.
+
+## 4. Enrichment (default 500 products)
+
+```sh
+make enrich                                # ENRICH_LIMIT (500), stratified by category
+make enrich ARGS="--limit 50"              # or --category toys, --all (every current product), --batch-size 25
+```
+
+Prints `A accepted, R rejected, S skipped in T s: x products/s, y tok/s`. Commits every 25 products,
+so a crash loses at most one batch. Idempotent on `(product_id, prompt_hash)`: a re-run reports
+everything skipped and makes no LLM calls. The prompt hash covers the product facts, reviews and schema,
+so changed reviews re-enrich a product (readers take the latest `enriched_at`). Rejects (after 3
+attempts with the validation error fed back) go to `silver/_rejects/product_enriched` with `rule_id`
+(e.g. `description:not_english`, `tags:too_short`) and are not retried unless the prompt changes.
+Measured (`--limit 200`): `196 accepted, 4 rejected, 0 skipped in 753.1 s: 0.266 products/s, 19.4 tok/s`,
+so 500 ≈ 31 min; the re-run printed `200 skipped in 0.0 s` and left both Delta versions unchanged.
+Traces go to MLflow experiment `genai` (tags `prompt_hash`, `model_alias`) when `MLFLOW_TRACKING_URI`
+is set.
+
+## 5. RAG index
+
+```sh
+make rag ARGS=init                          # sql/rag.sql: extension vector, schema rag, rag.chunks, HNSW + GIN; "rag.chunks ready"
+make rag ARGS=index                         # summaries (chat) first, then embeddings (embed), batches of 64
+make rag ARGS='search "a soft pillow for kids"'   # also --k 10 --category <English name> --mode hybrid|vector|text
+make rag ARGS=eval                          # Recall@10 + MRR per mode; MLflow run rag-eval (experiment genai)
+```
+
+`index` prints `P products, C chunks, S summaries, R rejected, E embedded, X pruned in T s`; a re-run
+should print 0 summaries, 0 embedded, 0 pruned. It indexes only enriched products (doc, one LLM review
+summary, reviews). Summaries are made once per product; delete a `review_summary` row to refresh it.
+`eval` writes `genai/eval_data/rag_queries.jsonl` (100 synthetic LLM-written queries, product id as
+label) only if missing; delete it to regenerate (committed from the first live run). It logs to MLflow only
+when `MLFLOW_TRACKING_URI` is set. Measured on 196 products: index `536 chunks, 21 summaries, 536 embedded
+in 143.6 s`, re-run `0 summaries, 0 embedded, 0 pruned`; eval Recall@10 / MRR vector 0.99 / 0.895, text
+0.02 / 0.02, hybrid 0.98 / 0.885 (query generation 8 min, eval alone 17 s).
+
+## 6. Shopping side tables
+
+```sh
+uv run --project agents agents shop init    # sql/shop.sql: schema shop, shop.stock, role shop_writer; "shop.stock rows: 32951"
+```
+
+Idempotent. Already applied once to the dev database (32,951 rows, 1,668 = 5.06 % out of stock).
+
+## 7. Agents CLI
+
+```sh
+uv run --project agents agents analytics "What was revenue by year?"      # answers clarifications on stdin
+docker compose exec postgres psql -U retail -d retail -c "select customer_id from olist.orders limit 3"
+uv run --project agents agents shopping "find a soft pillow for kids" --customer <customer_id>
+```
+
+Analytics answers end with the metric/SQL citation and a chart path (`CHART_DIR`). Shopping prints the
+quote of any order and asks `Approve this order? [y/N]`; only `y` writes (as `shop_writer`, status
+`created`). With `POSTGRES_DSN` set, memory is the Postgres checkpointer (schema `agents`); pass
+`--thread <id>` to continue a conversation.
+
+Measured: "What was revenue by year?" → `query_metric`, correct per-year revenue with SQL and chart, 3 LLM
+calls, ~11 s in the graph (97 s wall with process start-up). A one-line "buy 1 unit of <product_id>"
+quoted and, on `y`, wrote 1 order/item/payment (total 65.06 = quote, 29 s); on `n` it wrote nothing.
+
+## 8. Chainlit UI
+
+http://127.0.0.1:8010, profiles "Analytics" and "Shopping". Each graph node shows as a step (tool calls,
+args, SQL, errors); orders show Approve/Reject buttons (timeout = reject). The Shopping profile's
+"Customer id" chat setting (default `DEMO_CUSTOMER_ID` from `.env`) is the Olist customer the assistant
+acts for. It is free text and **not an authentication boundary**: anyone with the UI can type any id,
+so "own orders only" is only as strong as that setting (fine for a 127.0.0.1 demo). The container
+mounts `data/gold` and `analytics/target` read-only; `sql/rag.sql` and `sql/shop.sql` are baked into
+the image at `/app/sql` (rebuild after editing them; the Airflow tasks bind-mount `sql/` instead).
+
+## 9. Evals
+
+```sh
+make agents-eval ARGS="build-analytics"            # rebuild analytics_golden.jsonl from gold (no LLM, ~6 s)
+make agents-eval ARGS="analytics --limit 10"       # execution accuracy, judge score, trajectory, seconds
+make agents-eval ARGS="shopping --limit 10"        # tool selection, refusal / false refusal, faithfulness
+```
+
+Golden sets: `agents/evals/data/` (60 analytics, 40 + 20 shopping). `--limit` round-robins across
+categories. Each run prints a metrics JSON and logs to MLflow experiment `genai-evals`. Evals never
+place orders (approvals are answered `{"approved": false}`). The judge is the local Qwen unless
+`--provider hosted`.
+
+Measured `--limit 10` (local Qwen, judge = same Qwen): analytics execution accuracy 0.70, judge 3.8/5,
+11.4 s/case, wall 139 s; shopping (2 tool + 8 adversarial) tool selection 1.0, refusal 0.75, attempted
+forbidden 0.125, false refusal 0, faithfulness 3.75, wall 125 s.
+
+## 10. Hosted mode (optional)
+
+Set `OPENAI_API_KEY` (alias `chat-hosted` = `openai/gpt-4.1-mini`) and/or `ANTHROPIC_API_KEY`
+(`judge-hosted` = `anthropic/claude-haiku-4-5`) and `LLM_PROVIDER=hosted` in `.env`, then
+`docker compose --profile genai up -d litellm chainlit` (recreated with the new env). Enrichment, RAG
+summaries/queries, the shopping CLI and the UI then use `chat-hosted`; evals take
+`--provider hosted`. Embeddings always stay on local `embed`; `agents analytics` (CLI) always uses
+`chat`. There is no fallback: with a key unset the hosted alias fails with an auth error.
+
+## Troubleshooting
+
+- **GPU memory.** `nvidia-smi` and `ollama ps` show what is loaded. Qwen (~4.7 GB) and bge-m3 (~1.2 GB)
+  do not fit 6 GB together; close other GPU apps. If Ollama falls back to CPU, throughput drops sharply.
+- **Context window / VRAM.** `litellm/config.yaml` sets `num_ctx: 8192` on `chat` and `judge`:
+  Ollama's 2-4k default truncates the prompt from the start (the system prompt goes first, silently;
+  the server log says "truncating input prompt"). qwen2.5:7b Q4 with an 8k context is 5.4 GB
+  in `ollama ps` (measured: 24 %/76 % CPU/GPU, ≈ 20 tok/s), so on a 6 GB card keep bge-m3 swapped out during chat batches (do not
+  run `rag index`/embeddings alongside enrichment or an agent). If it spills to CPU, lower `num_ctx`
+  (e.g. 6144) and restart litellm.
+- **Model swap latency.** The first call after a swap waits for the model to load. Batch jobs avoid
+  per-item swaps (`rag index` runs all summaries before any embedding); running enrichment and an
+  agent at the same time makes Ollama swap repeatedly.
+- **Ollama from containers.** litellm reaches `OLLAMA_BASE_URL`
+  (`http://host.docker.internal:11434`). Check from the host: `curl -s http://127.0.0.1:11434/api/tags`.
+  An upstream "model not found" through the gateway means the alias reached Ollama but the model is not
+  pulled. If the container cannot connect at all, make Ollama listen beyond loopback (Windows user env
+  `OLLAMA_HOST=0.0.0.0:11434`, restart Ollama).
+- **litellm restarting:** `LITELLM_MASTER_KEY` empty (see the log line above).
+- **pgvector tests skip** ("the pgvector `vector` extension is not available") until the swap; litellm's
+  import-time `load_dotenv` makes tests pick up `POSTGRES_DSN`/`RAG_DSN` from `.env`. In CI they run
+  against a pgvector service container and any skip fails the `lint-test` job.
+- **`description:not_english` rejects:** the check needs ≥ 1 English stopword and more English than
+  Portuguese ones. Inspect `silver/_rejects/product_enriched`.
+
+## Known limits
+
+- Text search ANDs every query term (`websearch_to_tsquery`), so on paraphrased queries it finds almost
+  nothing (Recall@10 0.02) and hybrid ≈ vector.
+- Qwen at `num_ctx` 8192 is 5.4 GB and runs 24 %/76 % CPU/GPU on the 6 GB card (≈ 20 tok/s); the first
+  call after a load takes ~85 s.
+- `get_recommendations` emits no `product_view` events, so `/recommend` always serves cold-start
+  popularity (`strategy` is returned).
+- The UI "Customer id" setting and the CLI `--customer` are free text, not authentication: "own orders
+  only" holds only for the id typed in.
+- Agent orders stay `created` and do not decrement `shop.stock`.
+
+## Live pass checklist
+
+Run once the models are downloaded; record the numbers here and in ADR-0008.
+
+1. **pgvector swap** (§2): `select version()` = 16.15; `vector` available;
+   `datcollversion = pg_database_collation_actual_version` on every DB; Debezium slot `olist_debezium`
+   reactivates and `confirmed_flush_lsn` advances after a CDC smoke update; `make status` row counts
+   unchanged (orders 99,441, products 32,951); `realtime-sql-init` still works with the new image.
+2. **Gateway:** `/health/liveliness`; `/v1/models` lists the 5 aliases; `chat` answers; `embed` returns
+   1024 dims; `chat-hosted` without a key fails with an auth error (no silent fallback); litellm logs
+   print neither the master key nor prompts.
+3. **Structured output enforced:** with `drop_params: true`, the `json_schema` `response_format` reaches
+   Ollama (`format` in the Ollama request log) and is not dropped. Measure the enrichment first-attempt
+   validity rate.
+4. **Context window:** no "truncating input prompt" in the Ollama log for an analytics plan, a
+   20-review summary or a shopping turn. Measure VRAM with `ollama ps` at `num_ctx` 8192.
+5. **Enrichment 500:** accepted/rejected, `rule_id` histogram (watch `description:not_english`), tok/s
+   and wall time; re-run → all skipped, 0 LLM calls, Delta version unchanged; a product with an injected
+   review is not instruction-following.
+6. **DAGs:** `docker compose --profile genai build chainlit`; `analytics` + `genai` profiles up; `llm`
+   pool exists with 1 slot; trigger `enrich_catalogue` with a small `ENRICH_LIMIT` → `rag_index` fires on
+   the asset → `init` succeeds (reads `/app/sql/rag.sql`) → `index`; `nightly_evals` with
+   `EVAL_LIMIT=5`; the Rendered Template tab shows no secrets.
+7. **RAG:** `rag init`, `index` (all summaries before embeddings: one model swap, check `ollama ps`);
+   re-run prints `0 summaries, 0 embedded, 0 pruned`; `rag eval` writes
+   `genai/eval_data/rag_queries.jsonl` (commit it) and logs vector/text/hybrid Recall@10 and MRR to
+   MLflow; the `--category` filter returns k results (iterative scan).
+8. **Analytics agent (Ollama):** 7B tool calling works through `ollama_chat` + LiteLLM; answers cite the
+   metric/SQL; output-check pass/fallback rate; multi-turn follow-up; clarification path in UI and CLI;
+   overall AOV via `query_metric` = 160.2412.
+9. **Shopping agent:** search → get_product → check_stock → place_order → Approve writes 1
+   order/items/payment as `shop_writer` and CDC carries it to bronze; Reject writes 0 rows; the approved
+   total equals the inserted total; a cross-customer order is refused; `/recommend` cold start is
+   reachable from chainlit (`serving` in the `genai` profile, empty/initialised redis); titles appear
+   once enrichment exists.
+10. **Chainlit:** both profiles; steps stream; chart renders; Approve/Reject buttons; 300 s timeout =
+    reject; Postgres checkpointer: restart the container mid-thread and continue (or document that the
+    Chainlit thread id is not persisted without a data layer); the container stays < 1 g during a heavy
+    `run_sql`.
+11. **Evals** `--limit 10` per suite on Ollama: numbers + wall time with the per-kind breakdown; state
+    that the judge is the same Qwen; hosted comparison only if keys exist.
+12. **Failure modes:** stop Ollama → agent/UI shows a clear error, no partial writes; unknown alias →
+    error surfaced; stop postgres → shopping tools return ERROR messages and the UI recovers after the
+    restart.
+13. **Tracing:** MLflow experiment `genai` has agent and batch traces tagged `prompt_hash` +
+    `model_alias` (UI runs included); `genai-evals` has metrics + the per-case artefact.

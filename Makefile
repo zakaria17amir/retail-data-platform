@@ -9,7 +9,7 @@ export
 
 PROFILE ?= core
 
-.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load cloud-validate cloud-bootstrap cloud-plan cloud-up cloud-up-aws cloud-up-snowflake cloud-up-aws-integration cloud-down cloud-dbt
+.PHONY: up down destroy ps logs sync lint test test-integration test-spark test-ingest test-realtime replay sim reset-bronze download seed seed-sample sample status silver quality maintain gold dbt-parse sqlfluff airflow-cli ml-build ml recommend-load cloud-validate cloud-bootstrap cloud-plan cloud-up cloud-up-aws cloud-up-snowflake cloud-up-aws-integration cloud-down cloud-dbt ollama-models enrich rag agents-eval shop-init
 
 # --wait treats exited one-shot *-init containers as failures: wait on the long-running ones, then `docker wait` on each init service and require exit 0
 up:
@@ -173,3 +173,27 @@ cloud-down:
 # dbt build on Snowflake (cloud-batch.yml); SNOWFLAKE_* env, key-pair auth via SNOWFLAKE_PRIVATE_KEY
 cloud-dbt:
 	cd analytics && $(DBT_SNOWFLAKE) deps && $(DBT_SNOWFLAKE) build --target snowflake --exclude-resource-type unit_test
+
+OLLAMA_MODELS = qwen2.5:7b-instruct bge-m3
+
+# Ollama runs natively on the host (GPU); without the ollama CLI on PATH, print the commands instead
+ollama-models:
+	@if command -v ollama >/dev/null 2>&1; then \
+		for m in $(OLLAMA_MODELS); do ollama pull $$m || exit 1; done; \
+	else \
+		echo "ollama not on PATH; run on the host:"; for m in $(OLLAMA_MODELS); do echo "  ollama pull $$m"; done; \
+	fi
+
+# host-side CLIs: .env is exported above (LITELLM_URL, LITELLM_MASTER_KEY, MLFLOW_TRACKING_URI, MINIO_*, RAG_DSN, ...)
+enrich:
+	uv run --project genai genai enrich $(ARGS)
+
+rag:
+	uv run --project genai genai rag $(ARGS)
+
+agents-eval:
+	uv run --project agents agents eval $(ARGS)
+
+# sql/shop.sql: shop.stock + the INSERT-only shop_writer role used by the chainlit SHOP_DSN
+shop-init:
+	uv run --project agents agents shop init

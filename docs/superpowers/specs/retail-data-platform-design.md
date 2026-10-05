@@ -103,6 +103,20 @@ category + dimensions + top reviews via LiteLLM with JSON-schema output, validat
 (language, length), written to `silver/product_enriched/`, idempotent by `product_id` + prompt hash.
 Default local run: 5k-product sample; full 32k overnight on GPU.
 
+**Amendments (Phase 6, ADR-0008).**
+- *Sample size.* Default local run is 500 products stratified by category (`ENRICH_LIMIT`, `--limit`,
+  `--all`, `--category`): 5k is ≈ 8 h at ~35 tok/s on the RTX 4050 (estimate), so the full catalogue
+  (32,951 products) is a multi-day run at that rate, not overnight. No live run yet (models not
+  downloaded).
+- *Contract.* `title` 1–80, `description` 40–600, `tags` 3–8 lowercase, all ASCII, `language` = `en`
+  plus an English stopword heuristic. Invalid output is retried with the validation error fed back
+  (max 3), then written to `silver/_rejects/product_enriched` (`rule_id`, `reason`, raw output). Top-3
+  reviews are chosen by length (Olist has no helpfulness votes).
+- *Idempotency.* The prompt hash covers the rendered prompt (product facts, reviews, schema), so a
+  product whose reviews change gets a new row; readers take the latest `enriched_at` per `product_id`.
+  Rejects count as done until the prompt changes. Delta commits every 25 products.
+- Runs host-side (`make enrich` → `genai enrich`, separate uv project `genai`); traced to MLflow.
+
 ## 5. Ingestion (bronze)
 
 - **CDC path.** Postgres → Debezium (Kafka Connect) → Redpanda `cdc.olist.<table>` (Debezium envelope,
@@ -344,6 +358,47 @@ Containers: `redis`, `feast` push server. Profile `realtime`.
   refusal set, trajectory length.
 - Containers: `litellm`, `chainlit`. Profile `genai`.
 
+**Amendments (Phase 6, ADR-0008).** Code and mocked-LLM tests only so far: no live model numbers
+(enrichment rate, Recall@10/MRR, eval scores) exist until the Ollama models are downloaded.
+- *Gateway.* Aliases `chat`/`judge` (`qwen2.5:7b-instruct`) and `embed` (`bge-m3`) on host Ollama;
+  `chat-hosted` (`openai/gpt-4.1-mini`) and `judge-hosted` (`anthropic/claude-haiku-4-5`) are chosen by
+  clients when `LLM_PROVIDER=hosted`. No router fallbacks; embeddings always local. `chat`/`judge` set
+  `num_ctx: 8192` (Ollama's 2-4k default truncates the prompt from the start, dropping the system
+  prompt). Qwen (~4.7 GB; ~5.3 GB with the 8k KV cache, estimate) and bge-m3 (~1.2 GB) swap on the
+  6 GB GPU, so batch jobs run all chat calls, then all embeddings.
+- *Postgres* image `pgvector/pgvector:0.8.6-pg16-bookworm` (PG 16.15) on the existing volume; bookworm
+  keeps the collations of `postgres:16.6`. RAG in schema `rag`, shopping tables in `shop`, both outside
+  `olist_cdc`.
+- *RAG.* `rag.chunks` adds a `category` column for the filter. Retrieval = vector top-50 (HNSW cosine)
+  + `websearch_to_tsquery('simple')` top-50, RRF k = 60. One review summary per product, generated
+  once. Eval: Recall@10 and MRR for vector/text/hybrid on 100 synthetic LLM-written queries (source
+  product as label), logged to MLflow. CLI `genai rag init|index|search|eval`.
+- *Packaging.* `genai/` and `agents/` are separate uv projects (not workspace members); agents depends
+  on genai by path. The checkpointer uses schema `agents` in the `POSTGRES_DSN` database.
+- *Analytics agent.* MetricFlow runs as an in-process Python API on `semantic_manifest.json` (not
+  `dbt-metricflow`, which opened the DuckDB warehouse read-write); its SQL and `run_sql` share one
+  read-only DuckDB over `gold/*.parquet` with external access disabled (no DB role). `run_sql`: sqlglot
+  single query, no DDL/DML/file functions, gold tables only, LIMIT ≤ 1000, 10 s, EXPLAIN estimate
+  ≤ 50M rows. The estimate counts an ungrouped aggregate as 1 row, so MetricFlow's cross join of
+  per-metric totals passes (overall `aov` = 160.2412) while real cross products are still rejected.
+  Golden answers are computed from gold through the agent's tools (`agents eval build-analytics`).
+  Judge = local Qwen unless hosted.
+- *Shopping assistant.* `get_recommendations` posts the chat thread id but emits no `product_view`
+  events (would need `confluent-kafka[avro]` in agents), so `/recommend` serves cold-start popularity.
+  `place_order` is quoted, then gated by an `interrupt`; it writes as `shop_writer` (INSERT on
+  `orders`/`order_items`/`order_payments` only); orders stay `created`, `shop.stock` (seeded from
+  90-day velocity) is not decremented. Untrusted review/snippet text matching injection markers is
+  withheld. The UI's Shopping profile has a "Customer id" chat setting (default `DEMO_CUSTOMER_ID`);
+  the CLI takes `--customer`. Both are free text, not an authentication boundary: "own orders only" is only as
+  strong as that setting (local demo on 127.0.0.1).
+- *Evals/tracing.* Scorers are plain Python (execution match, tool selection, adversarial safety, judge
+  via the `judge` alias), logged as MLflow runs in experiment `genai-evals` (metrics + per-case
+  artefact), not `mlflow.genai.evaluate`. Traces: experiment `genai`, tagged prompt hash + model alias.
+- *Guardrails.* Output check: no PII echo and every number within 0.5 % of a tool result (integers ≤ 10
+  exempt); answers that fail fall back to the tool data.
+- *Containers.* `genai` also starts postgres, minio, mlflow, redis and serving; `chainlit` serves
+  http://127.0.0.1:8010 and mounts `data/gold` and `analytics/target` read-only.
+
 ## 11. Cloud path: AWS + Snowflake
 
 **Principle.** Local is complete; cloud is a cheap, impressive, tear-down-able slice plus a full
@@ -407,6 +462,12 @@ retail-data-platform/
   builds, `terraform validate/plan`; per-profile integration tests via Compose), `nightly-evals.yml`
   (ML smoke-train with floor, agent eval sets), `docs.yml` (dbt docs + GE docs + mkdocs → Pages).
   Tagged releases, `CHANGELOG.md`, images to GHCR.
+- *Amendment (Phase 6, ADR-0008).* `genai/` and `agents/` are separate uv projects like `ml/`
+  (`uv run --project genai|agents …`); the gateway config is `litellm/config.yaml`, the RAG and shop
+  DDL `sql/rag.sql` / `sql/shop.sql` (copied into the `retail-agents` image at `/app/sql`). GitHub
+  runners have no Ollama, so CI runs the genai/agents tests with mocked LLMs only, against a pgvector
+  service container (the same digest as Compose; a skipped Postgres test fails the job), and the agent eval sets run against local Ollama (Airflow
+  `nightly_evals`, Phase 6 task 7) or by hand with `--provider hosted`, not in `nightly-evals.yml`.
 - Docs: README (diagram source committed, demo GIF, 3-command run, CV-style highlights), ADRs for
   every non-obvious choice, per-layer runbooks, `docs/interview-notes.md` (running "what broke and
   how I fixed it" log).
