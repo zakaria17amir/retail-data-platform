@@ -23,6 +23,8 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --all-packages --group dev
       - run: make lint
+      # EMR Serverless emr-spark-8.0.0 runs Python 3.11: the shipped package must compile there (pyspark not imported)
+      - run: uv run --python 3.11 --no-project python -m compileall -q lakehouse/spark/src/lakehouse_spark
       - run: make test
       # local manifest in analytics/target/ is what the DAG tests (Cosmos DBT_MANIFEST) load
       - run: make dbt-parse
