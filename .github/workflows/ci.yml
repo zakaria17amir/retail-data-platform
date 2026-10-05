@@ -16,6 +16,19 @@ jobs:
   lint-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # superuser for the genai/agents DB tests: each makes a throwaway database; shop init creates the
+    # cluster role shop_writer; rag init runs CREATE EXTENSION vector. Same image as compose postgres
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.6-pg16-bookworm@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_TEST_DSN: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -34,6 +47,28 @@ jobs:
       - run: uv run --locked --project ml ruff check ml
       - run: uv run --locked --project ml mypy --config-file ml/pyproject.toml ml/src
       - run: uv run --locked --project ml pytest ml
+      # genai and agents are separate uv projects too (agents has genai as a path dependency). No
+      # Ollama here: the LLM is mocked (LiteLLM mock_response, fake chat model, fake embedder). The
+      # pgvector/Postgres tests (rag store, shop_writer grants, HITL writes, checkpointer) skip
+      # without RAG_DSN / POSTGRES_DSN, so here any skip fails the step
+      - run: uv run --locked --project genai ruff check genai
+      - run: uv run --locked --project genai mypy --config-file genai/pyproject.toml genai/src
+      - env:
+          RAG_DSN: ${{ env.PG_TEST_DSN }}
+          POSTGRES_DSN: ${{ env.PG_TEST_DSN }}
+        run: |
+          set -o pipefail
+          uv run --locked --project genai pytest genai -rs | tee genai-pytest.txt
+          grep -q ' passed' genai-pytest.txt && ! grep -q ' skipped' genai-pytest.txt
+      - run: uv run --locked --project agents ruff check agents
+      - run: uv run --locked --project agents mypy --config-file agents/pyproject.toml agents/src
+      - env:
+          POSTGRES_DSN: ${{ env.PG_TEST_DSN }}
+          RAG_DSN: ${{ env.PG_TEST_DSN }}
+        run: |
+          set -o pipefail
+          uv run --locked --project agents pytest agents -rs | tee agents-pytest.txt
+          grep -q ' passed' agents-pytest.txt && ! grep -q ' skipped' agents-pytest.txt
 
   integration:
     needs: lint-test

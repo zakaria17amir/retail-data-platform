@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 import numpy as np
 import pandas as pd
+from deltalake import DeltaTable
+from deltalake.exceptions import TableNotFoundError
 from feast import FeatureStore
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -30,6 +33,7 @@ SESSION_REFS = [f"session_features:{c}" for c in SESSION_FIELDS]
 POPULARITY_REFS = [f"product_popularity:{c}" for c in POPULARITY_COLUMNS]
 Strategy = Literal["rerank", "category_popularity", "global_popularity"]
 Catalogue = dict[str, tuple[str | None, str | None]]  # product_id -> (category, category_en)
+ENRICHED = "silver/product_enriched"  # genai.enrichment.writer.ENRICHED
 
 
 class RecommendRequest(BaseModel):
@@ -44,7 +48,7 @@ class Item(BaseModel):
     score: float
     category: str | None  # product_category_name (Portuguese, the pop:category: vocabulary)
     category_en: str | None = None
-    title: None = None  # Phase 6 enrichment
+    title: str | None = None  # latest LLM-enriched title (silver/product_enriched)
 
 
 class RecommendResponse(BaseModel):
@@ -77,6 +81,7 @@ class Sources:
     online: OnlineFeatures | None  # None: Feast registry missing -> every session is unknown
     redis: Any  # redis-py client (`mget`)
     catalogue: Catalogue
+    titles: dict[str, str] = field(default_factory=dict)  # product_id -> enriched title
 
 
 class FeastOnline:
@@ -137,6 +142,36 @@ def load_catalogue() -> Catalogue:
     }
 
 
+def load_titles(root: str | None = None) -> dict[str, str]:
+    """Latest enriched title per product from Delta `silver/product_enriched` ({} without it)."""
+    root = root or f"s3://{os.environ.get('LAKEHOUSE_BUCKET') or 'lakehouse'}"
+    options = {}
+    if root.startswith("s3"):
+        options = {
+            "AWS_ENDPOINT_URL": os.environ.get("MINIO_ENDPOINT") or "http://127.0.0.1:9000",
+            "AWS_ACCESS_KEY_ID": os.environ.get("MINIO_ROOT_USER", ""),
+            "AWS_SECRET_ACCESS_KEY": os.environ.get("MINIO_ROOT_PASSWORD", ""),
+            "AWS_ALLOW_HTTP": "true",
+            "AWS_REGION": "us-east-1",
+            # object_store retries an unreachable endpoint for ~1 min by default; this runs at start
+            "connect_timeout": "2s",
+            "timeout": "5s",
+            "max_retries": "1",
+            "retry_timeout": "5s",
+        }
+    try:
+        table = DeltaTable(f"{root}/{ENRICHED}", storage_options=options)
+        df = table.to_pandas(columns=["product_id", "title", "enriched_at"])
+    except TableNotFoundError:
+        logger.warning("%s/%s not found; items get title null", root, ENRICHED)
+        return {}
+    except Exception:
+        logger.exception("enriched titles unreadable; items get title null")
+        return {}
+    df = df.sort_values("enriched_at", kind="stable").drop_duplicates("product_id", keep="last")
+    return {p: t for p, t in zip(df["product_id"], df["title"], strict=True) if isinstance(t, str)}
+
+
 def load_sources() -> Sources:
     from retail_ml.recommender.publish import redis_client
 
@@ -146,7 +181,7 @@ def load_sources() -> Sources:
         online = FeastOnline(feature_store())
     else:
         logger.warning("%s", FeatureStoreUnavailable("Feast registry not found"))
-    return Sources(online, redis_client(), load_catalogue())
+    return Sources(online, redis_client(), load_catalogue(), load_titles())
 
 
 def _json(raw: str | None) -> Any:
@@ -292,6 +327,7 @@ def recommend(
             score=float(s),
             category=sources.catalogue.get(p, (None, None))[0],
             category_en=sources.catalogue.get(p, (None, None))[1],
+            title=sources.titles.get(p),
         )
         for p, s in zip(ids, scores, strict=True)
     ]

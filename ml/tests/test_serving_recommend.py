@@ -9,9 +9,11 @@ import lightgbm as lgb
 import mlflow
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 import redis
 from conftest import local_store
+from deltalake import write_deltalake
 from fastapi.testclient import TestClient
 from feast.data_source import PushMode
 from mlflow import MlflowClient
@@ -32,9 +34,12 @@ from retail_ml.serving.recommend import (
     Recommender,
     Sources,
     load_recommender,
+    load_titles,
     rank_inputs,
     session_pool,
 )
+
+TS_UTC = pa.timestamp("us", tz="UTC")  # genai.enrichment.writer.ENRICHED_SCHEMA
 
 SESSION = {
     "n_events": 6,
@@ -110,12 +115,14 @@ def _client(
     redis_values: dict[str, Any] | None = None,
     online: Any = None,
     down: bool = False,
+    titles: dict[str, str] | None = None,
 ) -> TestClient:
     values = {**POP, **{f"cand:{k}": v for k, v in CANDIDATES.items()}}
     sources = Sources(
         online=online if online is not None else FakeOnline({"s1": SESSION}),
         redis=FakeRedis(values if redis_values is None else redis_values, down=down),
         catalogue=CATALOGUE,
+        titles=titles or {},
     )
     app = create_app(
         load_model=lambda: None,
@@ -340,6 +347,70 @@ def test_reload_picks_up_a_new_recommender(ranker: StubRanker) -> None:
         assert c.post("/recommend", json={"session_id": "s1"}).json()["model_version"] is None
         assert c.post("/reload").status_code == 200
         assert c.post("/recommend", json={"session_id": "s1"}).json()["model_version"] == "5"
+
+
+def _enriched(root: Path, rows: list[dict[str, Any]]) -> None:
+    schema = pa.schema(
+        [("product_id", pa.string()), ("title", pa.string()), ("enriched_at", TS_UTC)]
+    )
+    write_deltalake(
+        str(root / "silver" / "product_enriched"),
+        pa.Table.from_pylist(rows, schema=schema),
+        mode="append",
+    )
+
+
+def test_titles_are_the_latest_enrichment_per_product(tmp_path: Path) -> None:
+    t0, t1 = pd.Timestamp("2026-10-01", tz="UTC"), pd.Timestamp("2026-10-02", tz="UTC")
+    _enriched(tmp_path, [{"product_id": "a", "title": "Old car", "enriched_at": t1}])
+    _enriched(
+        tmp_path,
+        [
+            {"product_id": "a", "title": "Toy car", "enriched_at": t1 + pd.Timedelta("1s")},
+            {"product_id": "b", "title": "Baby bottle", "enriched_at": t0},
+            {"product_id": "c", "title": None, "enriched_at": t0},
+        ],
+    )
+    assert load_titles(str(tmp_path)) == {"a": "Toy car", "b": "Baby bottle"}
+
+
+def test_titles_are_empty_without_the_enriched_table(tmp_path: Path) -> None:
+    assert load_titles(str(tmp_path)) == {}
+    assert load_titles(str(tmp_path / "not-a-dir")) == {}
+
+
+def test_items_carry_enriched_titles_null_when_absent(ranker: StubRanker) -> None:
+    titles = {"c": "Toy car", "zzz": "unrelated"}
+    with _client(recommender=Recommender("4", ranker, 3, 2), titles=titles) as c:
+        body = c.post("/recommend", json={"session_id": "s1", "k": 3}).json()
+    assert [(i["product_id"], i["title"]) for i in body["items"]] == [
+        ("c", "Toy car"),
+        ("t2", None),
+        ("b", None),
+    ]
+
+
+@pytest.mark.parametrize("champion", [True, False])
+def test_reload_refreshes_titles(ranker: StubRanker, champion: bool) -> None:
+    titles = iter([{}, {"g1": "Garden hose"}])
+    app = create_app(
+        load_model=lambda: LoadedModel("1", ranker) if champion else None,
+        load_lookup=lambda: lambda seller_id: {},
+        load_recommender=lambda: None,
+        load_sources=lambda: Sources(None, FakeRedis({**POP}), {}, next(titles)),
+    )
+    with TestClient(app) as c:
+        assert c.post("/recommend", json={"session_id": "x"}).json()["items"][0]["title"] is None
+        # titles refresh even when there is no late_delivery champion to reload (503)
+        assert c.post("/reload").status_code == (200 if champion else 503)
+        item = c.post("/recommend", json={"session_id": "x"}).json()["items"][0]
+    assert item == {
+        "product_id": "g1",
+        "score": 1.0,
+        "category": None,
+        "category_en": None,
+        "title": "Garden hose",
+    }
 
 
 def test_online_reads_are_not_ttl_filtered_against_dataset_time(tmp_path: Path) -> None:
