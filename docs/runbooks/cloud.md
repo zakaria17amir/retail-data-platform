@@ -57,7 +57,7 @@ in Git Bash.
      | `SNOWFLAKE_ROLE` | `TRANSFORMER` |
      | `SNOWFLAKE_WAREHOUSE` | `RETAIL_WH` (`warehouse`) |
      | `SNOWFLAKE_DATABASE` | `RETAIL` (`database`) |
-     | `SNOWPIPE_WAIT_SECONDS` | optional: pause between the export and dbt (default `180`) |
+     | `SNOWPIPE_TIMEOUT_SECONDS` | optional: how long to poll Snowflake for the run's files before failing (default `900`) |
 
   3. **Secrets:** `SNOWFLAKE_PRIVATE_KEY`, the PEM content of `dbt_key.p8`.
   4. **Optional, for `plan` in `terraform.yml`.** It runs on push to `main` or on manual dispatch,
@@ -172,9 +172,12 @@ the GitHub run id as `<run_id>`. The steps:
    to `s3://<artifacts>/jobs/<git-sha>/`.
 3. Run EMR `silver --run-id <id>`, then `export --run-id <id>`, waiting for each with a 45-minute
    timeout.
-4. Wait `SNOWPIPE_WAIT_SECONDS`.
-5. Run `make cloud-dbt` (`dbt build --target snowflake --exclude-resource-type unit_test`, key-pair
-   from `SNOWFLAKE_PRIVATE_KEY`). The dbt unit tests run on duckdb in CI.
+4. Download `s3://<lakehouse>/export/_manifests/<run_id>.json` (parts and rows per table) and poll
+   Snowflake (`lakehouse_spark.cloud.snowpipe_wait`) until every table holds exactly that run's files
+   and rows, up to `SNOWPIPE_TIMEOUT_SECONDS`.
+5. Run `dbt build --target snowflake --exclude-resource-type unit_test --vars "{export_run_id: '<id>'}"`
+   (key-pair from `SNOWFLAKE_PRIVATE_KEY`), so GOLD is built from exactly this run. The dbt unit tests
+   run on duckdb in CI.
 6. Write the job-run ids and states to the job summary.
 
 Then verify:
@@ -193,9 +196,11 @@ SHOW TABLES IN SCHEMA RETAIL.GOLD;
 ```
 
 If the job fails, look in the EMR log group (`terraform output emr_log_group_name`). A `Traceback`
-there also fires the CloudWatch alarm email. Snowpipe loads asynchronously. If dbt runs before the
-new run id shows up in `COPY_HISTORY`, raise `SNOWPIPE_WAIT_SECONDS` and re-run dbt with
-`make cloud-dbt` (the `SNOWFLAKE_*` env vars must be set). dbt reads only the latest run per table.
+there also fires the CloudWatch alarm email. Snowpipe loads asynchronously: if the poll times out it
+lists each table's missing files and rows (`table: files a/b, rows c/d`); check `COPY_HISTORY` and
+`SYSTEM$PIPE_STATUS`, then re-run the workflow or raise `SNOWPIPE_TIMEOUT_SECONDS`. A manual
+`make cloud-dbt` (the `SNOWFLAKE_*` env vars set) reads each table's latest run; for an exact run add
+`--vars "{export_run_id: '<id>'}"` to the dbt command.
 
 ## 6. Enabling serving (optional)
 

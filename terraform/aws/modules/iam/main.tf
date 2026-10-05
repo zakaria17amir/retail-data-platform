@@ -150,6 +150,13 @@ data "aws_iam_policy_document" "github_run" {
     resources = ["${var.artifacts_bucket_arn}/*"]
   }
 
+  # cloud-batch downloads the export manifest to know which parts Snowpipe must load
+  statement {
+    sid       = "ExportManifestsRead"
+    actions   = ["s3:GetObject"]
+    resources = ["${var.lakehouse_bucket_arn}/export/_manifests/*"]
+  }
+
   statement {
     sid       = "PassEmrJobRole"
     actions   = ["iam:PassRole"]
