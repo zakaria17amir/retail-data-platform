@@ -20,4 +20,4 @@ select
     flag_delivered_before_carrier,
     flag_delivered_before_purchase,
     _silver_loaded_at
-from {{ source('silver', 'orders') }}
+from {{ latest_export(source('silver', 'orders')) }}

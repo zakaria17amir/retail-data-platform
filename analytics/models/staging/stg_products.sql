@@ -16,4 +16,4 @@ select
     valid_from,
     valid_to,
     is_current
-from {{ source('silver', 'products') }}
+from {{ latest_export(source('silver', 'products')) }}

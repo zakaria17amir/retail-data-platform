@@ -4,4 +4,4 @@ select
     lng,
     n_points,
     state
-from {{ source('silver', 'zip_centroids') }}
+from {{ latest_export(source('silver', 'zip_centroids')) }}

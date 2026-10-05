@@ -13,4 +13,4 @@ select
     review_answer_ts_local,
     review_answer_ts_utc,
     _silver_loaded_at
-from {{ source('silver', 'order_reviews') }}
+from {{ latest_export(source('silver', 'order_reviews')) }}
