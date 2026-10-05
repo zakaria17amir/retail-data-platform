@@ -4,6 +4,26 @@ An end-to-end, laptop-runnable retail data platform built on the real Olist Braz
 dataset: CDC and streaming ingestion into a Delta Lake lakehouse, dbt-modelled gold marts, batch and
 real-time ML with MLOps, and GenAI agents, with an AWS + Snowflake cloud path.
 
+## Highlights
+
+- Nothing is dropped silently. Bad payloads go to a bronze quarantine and silver rule violations to
+  `_rejects` + `_rule_metrics`, behind Great Expectations gates
+  ([ADR-0003](docs/adr/0003-ingestion-serialization.md), [ADR-0004](docs/adr/0004-silver-design.md),
+  [lakehouse runbook](docs/runbooks/lakehouse.md)).
+- Incremental silver with idempotent Delta writes, latest-LSN MERGE and CDC-driven SCD2
+  ([ADR-0004](docs/adr/0004-silver-design.md)).
+- dbt gold star schema, with MetricFlow as the single metric definition, scheduled by Airflow 3
+  ([ADR-0005](docs/adr/0005-gold-and-orchestration.md), [analytics runbook](docs/runbooks/analytics.md)).
+- Late-delivery model beats its baselines on test: PR-AUC 0.134 vs 0.055 prior / 0.104 logistic.
+  Promotion is gated on MLflow champion/challenger plus a Brier ≤ min(prior, logistic) check
+  ([ADR-0006](docs/adr/0006-ml-platform.md), [model card](ds/model_cards/late_delivery.md)).
+- Real-time ML: CDC stream scoring and Spark session features pushed to Feast for `/recommend`.
+  Missed latency targets are documented with measured numbers
+  ([ADR-0007](docs/adr/0007-realtime-ml.md), [realtime runbook](docs/runbooks/realtime.md)).
+- AWS + Snowflake slice as Terraform, validated in CI; apply is manual
+  ([ADR-0009](docs/adr/0009-cloud-slice.md), [cloud runbook](docs/runbooks/cloud.md)).
+- Incidents, trade-offs and limitations: [docs/interview-notes.md](docs/interview-notes.md).
+
 ## Architecture
 
 ```
@@ -166,15 +186,15 @@ Prerequisites, the two-step apply, the evidence checklist and the cost guard-rai
 
 | # | Phase | Status |
 |---|-------|--------|
-| 0 | Foundation | In progress |
-| 1 | Ingestion | In progress: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
-| 2 | Lakehouse | In progress: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
-| 3 | Analytics | In progress: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
-| 4 | Batch ML + MLOps | In progress: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
-| 5 | Real-time ML | In progress: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
-| 6 | GenAI & agents | In progress: code + tests done (LiteLLM → Ollama, LLM catalogue enrichment, pgvector hybrid RAG, LangGraph analytics agent over MetricFlow + guarded SQL, shopping agent with human-approved orders, golden-set evals, Chainlit); live pass on local Qwen: 19.4 tok/s enrichment, RAG hybrid Recall@10 0.98 / MRR 0.885, analytics execution accuracy 0.70, shopping tool selection 1.0; DAGs and Chainlit not yet run live ([ADR-0008](docs/adr/0008-genai-agents.md)) |
+| 0 | Foundation | Done: Compose core, Olist in Postgres, uv workspace, CI |
+| 1 | Ingestion | Done: CDC + clickstream into bronze Delta with quarantine ([ADR-0003](docs/adr/0003-ingestion-serialization.md)) |
+| 2 | Lakehouse | Done: silver Delta with SCD2, rejects, rule metrics and GE gates ([ADR-0004](docs/adr/0004-silver-design.md)) |
+| 3 | Analytics | Done: dbt gold star schema + Parquet marts, MetricFlow metrics, Airflow 3 DAGs, Power BI PBIP ([ADR-0005](docs/adr/0005-gold-and-orchestration.md)) |
+| 4 | Batch ML + MLOps | Done: late-delivery risk + demand forecast, Feast, MLflow champion/challenger, FastAPI serving, Evidently monitoring, ML DAGs ([ADR-0006](docs/adr/0006-ml-platform.md)) |
+| 5 | Real-time ML | Done: Python CDC stream scorer → `ml.order_risk`, Spark session features + popularity via Feast push, two-stage recommender (co-vis + ALS → LightGBM), `/recommend`, feedback CTR (cold start only so far) ([ADR-0007](docs/adr/0007-realtime-ml.md)) |
+| 6 | GenAI & agents | Done: (LiteLLM → Ollama, LLM catalogue enrichment, pgvector hybrid RAG, LangGraph analytics agent over MetricFlow + guarded SQL, shopping agent with human-approved orders, golden-set evals, Chainlit); live pass on local Qwen: 19.4 tok/s enrichment, RAG hybrid Recall@10 0.98 / MRR 0.885, analytics execution accuracy 0.70, shopping tool selection 1.0; DAGs and Chainlit not yet run live ([ADR-0008](docs/adr/0008-genai-agents.md)) |
 | 7 | Cloud | code + validation done; apply manual, not yet run — Terraform AWS (S3, EMR Serverless, ECS serving, OIDC, Budget) + Snowflake (Snowpipe, dbt-snowflake gold) ([ADR-0009](docs/adr/0009-cloud-slice.md), [mapping](docs/cloud-architecture.md)) |
-| 8 | Polish | Planned |
+| 8 | Polish | Done: interview notes, highlights |
 
 ## Data attribution
 
