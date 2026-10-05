@@ -49,6 +49,12 @@ variable "image_tag" {
   type        = string
 }
 
+variable "enable_serving" {
+  description = "Create the ALB, target group, listener and ECS service; false keeps only ECR, cluster and task definition (~$0 idle)."
+  type        = bool
+  default     = false
+}
+
 variable "desired_count" {
   description = "Number of running tasks; 0 keeps the service defined at no compute cost."
   type        = number

@@ -191,7 +191,10 @@ resource "aws_vpc_security_group_egress_rule" "task_out" {
   ip_protocol       = "-1"
 }
 
+# ALB, target group, listener and service only with enable_serving: the ALB bills ~$17/month idle
 resource "aws_lb" "serving" {
+  count = var.enable_serving ? 1 : 0
+
   name                       = local.lb_name
   load_balancer_type         = "application"
   security_groups            = [aws_security_group.alb.id]
@@ -200,6 +203,8 @@ resource "aws_lb" "serving" {
 }
 
 resource "aws_lb_target_group" "serving" {
+  count = var.enable_serving ? 1 : 0
+
   name        = local.lb_name
   port        = local.port
   protocol    = "HTTP"
@@ -213,17 +218,21 @@ resource "aws_lb_target_group" "serving" {
 }
 
 resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.serving.arn
+  count = var.enable_serving ? 1 : 0
+
+  load_balancer_arn = aws_lb.serving[0].arn
   port              = 80
   protocol          = "HTTP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.serving.arn
+    target_group_arn = aws_lb_target_group.serving[0].arn
   }
 }
 
 resource "aws_ecs_service" "serving" {
+  count = var.enable_serving ? 1 : 0
+
   name            = local.name
   cluster         = aws_ecs_cluster.serving.id
   task_definition = aws_ecs_task_definition.serving.arn
@@ -237,7 +246,7 @@ resource "aws_ecs_service" "serving" {
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.serving.arn
+    target_group_arn = aws_lb_target_group.serving[0].arn
     container_name   = "serving"
     container_port   = local.port
   }

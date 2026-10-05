@@ -42,3 +42,49 @@ variable "monthly_budget_usd" {
   type        = number
   default     = 25
 }
+
+variable "emr_release_label" {
+  description = "EMR Serverless release for the silver jobs: emr-spark-8.0.0 = Spark 4.0.2 / Delta 4.0.0 (local: Spark 4.0.4 / Delta 4.0.1); confirmed by Phase 7 T4."
+  type        = string
+  default     = "emr-spark-8.0.0"
+}
+
+variable "serving_image_tag" {
+  description = "Serving image tag in ECR (the git SHA CI pushes)."
+  type        = string
+}
+
+variable "serving_allowed_cidr" {
+  description = "Only CIDR allowed to reach the serving ALB (e.g. your public IP /32)."
+  type        = string
+}
+
+variable "enable_serving" {
+  description = "Create the serving ALB + ECS service (ALB ~$17/month idle); false keeps ECR + cluster only."
+  type        = bool
+  default     = false
+}
+
+variable "serving_desired_count" {
+  description = "Running serving tasks; 0 = defined but no compute cost."
+  type        = number
+  default     = 0
+}
+
+variable "snowflake_sqs_arn" {
+  description = "Snowflake pipe notification_channel (SQS ARN), from the Snowflake root's outputs; empty skips the S3 notification."
+  type        = string
+  default     = ""
+}
+
+variable "snowflake_iam_user_arn" {
+  description = "Snowflake storage integration STORAGE_AWS_IAM_USER_ARN; empty skips the Snowflake role (step 1 of the two-step apply)."
+  type        = string
+  default     = ""
+}
+
+variable "snowflake_external_id" {
+  description = "Snowflake storage integration STORAGE_AWS_EXTERNAL_ID; empty skips the Snowflake role (step 1 of the two-step apply)."
+  type        = string
+  default     = ""
+}

@@ -14,13 +14,13 @@ output "cluster_name" {
 }
 
 output "service_name" {
-  description = "ECS service name (scale with update-service --desired-count)."
-  value       = aws_ecs_service.serving.name
+  description = "ECS service name (scale with update-service --desired-count); null unless enable_serving."
+  value       = one(aws_ecs_service.serving[*].name)
 }
 
 output "alb_dns_name" {
-  description = "Public DNS name of the serving ALB (HTTP, allowed CIDR only)."
-  value       = aws_lb.serving.dns_name
+  description = "Public DNS name of the serving ALB (HTTP, allowed CIDR only); null unless enable_serving."
+  value       = one(aws_lb.serving[*].dns_name)
 }
 
 output "config_secret_arn" {

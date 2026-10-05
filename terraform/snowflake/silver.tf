@@ -160,6 +160,32 @@ locals {
         "REC_STRATEGY VARCHAR",
       ]
     }
+    # DQ history (silver job / quality run); lower-case `table` is created quoted, as staging selects "table"
+    rule_metrics = {
+      path = "_rule_metrics"
+      columns = [
+        "RUN_ID VARCHAR",
+        "table VARCHAR",
+        "RULE_ID VARCHAR",
+        "ROWS_IN NUMBER(38,0)",
+        "ROWS_REJECTED NUMBER(38,0)",
+        "PCT_REJECTED FLOAT",
+        "RUN_TS TIMESTAMP_LTZ(6)",
+      ]
+    }
+    dq_results = {
+      path = "_dq_results"
+      columns = [
+        "RUN_ID VARCHAR",
+        "table VARCHAR",
+        "EXPECTATION VARCHAR",
+        "SEVERITY VARCHAR",
+        "SUCCESS BOOLEAN",
+        "OBSERVED_VALUE VARCHAR",
+        "DETAILS VARCHAR",
+        "CHECKED_AT TIMESTAMP_LTZ(6)",
+      ]
+    }
   }
 }
 

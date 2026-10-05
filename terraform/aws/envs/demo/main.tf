@@ -29,4 +29,6 @@ module "iam" {
   artifacts_bucket_arn = module.storage.artifacts_bucket_arn
   lakehouse_bucket_arn = module.storage.lakehouse_bucket_arn
   emr_log_group_arn    = module.observability.emr_log_group_arn
+  emr_application_arn  = module.emr_serverless.application_arn
+  ecr_repository_arn   = module.serving.ecr_repository_arn
 }
